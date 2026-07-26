@@ -1,0 +1,361 @@
+#!/usr/bin/python3
+"""
+Cockpit IP Unblock Helper — backend script for the ip-unblock Cockpit plugin.
+
+Usage:
+    cockpit-ip-unblock-helper --user <name> list
+    cockpit-ip-unblock-helper --user <name> unblock <ip> [--force]
+    cockpit-ip-unblock-helper --user <name> status
+    cockpit-ip-unblock-helper --user <name> recent
+
+Rate limiting: per-user daily cap (default 5). Sudo group members unlimited.
+State lives in STATE_FILE. Audit log via syslog + FILE_LOG.
+"""
+
+import grp
+import json
+import os
+import re
+import subprocess
+import sys
+import syslog
+from datetime import date, datetime
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+MAX_UNBLOCKS_PER_DAY = 5
+STATE_FILE = "/var/lib/cockpit/ip-unblock-state.json"
+FILE_LOG = "/var/log/cockpit-ip-unblock.log"
+SUDO_GROUP = "sudo"
+
+ALLOWED_TARGETS = {"DROP", "REJECT"}
+
+IPV4_RE = re.compile(
+    r"^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}"
+    r"(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$"
+)
+IPV6_RE = re.compile(
+    r"^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|"
+    r"([0-9a-fA-F]{1,4}:){1,7}:|"
+    r"([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|"
+    r"([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|"
+    r"([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|"
+    r"([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|"
+    r"([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|"
+    r"[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|"
+    r":((:[0-9a-fA-F]{1,4}){1,7}|:)|"
+    r"fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|"
+    r"::(ffff(:0{1,4}){0,1}:){0,1}"
+    r"((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}"
+    r"(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|"
+    r"([0-9a-fA-F]{1,4}:){1,4}:"
+    r"((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}"
+    r"(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$"
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_CLI_USER = None
+
+
+def get_user():
+    if _CLI_USER:
+        return _CLI_USER
+    return os.environ.get("COCKPIT_USER", "unknown")
+
+
+def is_sudoer(user):
+    """Check if *user* is in the sudo group → unlimited unblocks."""
+    try:
+        group = grp.getgrnam(SUDO_GROUP)
+        return user in group.gr_mem
+    except KeyError:
+        return False
+
+
+def is_valid_ip(ipstr):
+    return bool(IPV4_RE.match(ipstr) or IPV6_RE.match(ipstr))
+
+
+def audit(action, blocked_ip, result, detail=""):
+    user = get_user()
+    msg = (
+        f"user={user} action={action} blocked_ip={blocked_ip} "
+        f"result={result}"
+    )
+    if detail:
+        msg += f" detail={detail}"
+
+    syslog.openlog("cockpit-ip-unblock", syslog.LOG_PID, syslog.LOG_AUTH)
+    syslog.syslog(syslog.LOG_NOTICE, msg)
+    syslog.closelog()
+
+    try:
+        os.makedirs(os.path.dirname(FILE_LOG), exist_ok=True)
+        with open(FILE_LOG, "a") as fh:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            fh.write(f"[{ts}] {msg}\n")
+    except OSError:
+        pass
+
+
+def load_state():
+    try:
+        with open(STATE_FILE, "r") as fh:
+            return json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state):
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    with open(STATE_FILE + ".tmp", "w") as fh:
+        json.dump(state, fh)
+    os.replace(STATE_FILE + ".tmp", STATE_FILE)
+
+
+def get_quota(user):
+    """Return (remaining, limit, unlimited) for *user* today."""
+    if is_sudoer(user):
+        return -1, -1, True  # unlimited
+
+    state = load_state()
+    today = date.today().isoformat()
+    entry = state.get(user, {})
+    if entry.get("date") != today:
+        return MAX_UNBLOCKS_PER_DAY, MAX_UNBLOCKS_PER_DAY, False
+    used = entry.get("count", 0)
+    remaining = max(0, MAX_UNBLOCKS_PER_DAY - used)
+    return remaining, MAX_UNBLOCKS_PER_DAY, False
+
+
+def consume_quota(user):
+    """Increment today's usage. Returns (remaining, limit, unlimited)."""
+    if is_sudoer(user):
+        return -1, -1, True
+
+    state = load_state()
+    today = date.today().isoformat()
+    entry = state.get(user, {})
+    if entry.get("date") != today:
+        entry = {"date": today, "count": 0, "history": []}
+    if "history" not in entry:
+        entry["history"] = []
+    if entry.get("count", 0) >= MAX_UNBLOCKS_PER_DAY:
+        return -1, MAX_UNBLOCKS_PER_DAY, False
+    entry["count"] = entry.get("count", 0) + 1
+    state[user] = entry
+    save_state(state)
+    return max(0, MAX_UNBLOCKS_PER_DAY - entry["count"]), MAX_UNBLOCKS_PER_DAY, False
+
+
+def record_history(user, ip):
+    """Append an unblock record to the user's state."""
+    state = load_state()
+    today = date.today().isoformat()
+    entry = state.get(user, {"date": today, "count": 0, "history": []})
+    if entry.get("date") != today:
+        entry = {"date": today, "count": entry.get("count", 0), "history": []}
+    if "history" not in entry:
+        entry["history"] = []
+    entry["history"].append({
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ip": ip,
+    })
+    # Keep only today's records
+    state[user] = entry
+    save_state(state)
+
+
+def get_recent(user):
+    """Return today's unblock history for *user*."""
+    state = load_state()
+    entry = state.get(user, {})
+    today = date.today().isoformat()
+    if entry.get("date") != today:
+        return []
+    return entry.get("history", [])
+
+
+def list_blocked():
+    try:
+        out = subprocess.check_output(
+            ["iptables", "-L", "INPUT", "-n", "--line-numbers"],
+            stderr=subprocess.STDOUT, text=True
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: iptables failed: {e.output}")
+        sys.exit(1)
+
+    rules = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("Chain ") or line.startswith("num "):
+            continue
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        target = parts[1]
+        if target not in ALLOWED_TARGETS:
+            continue
+        rules.append({
+            "num": parts[0],
+            "target": target,
+            "source": parts[4],
+        })
+    return rules
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def cmd_list():
+    user = get_user()
+    remaining, limit, unlimited = get_quota(user)
+    rules = list_blocked()
+    result = {
+        "user": user,
+        "quota_remaining": remaining,
+        "quota_limit": limit,
+        "unlimited": unlimited,
+        "blocked_ips": rules,
+    }
+    print(json.dumps(result))
+
+
+def cmd_status():
+    user = get_user()
+    remaining, limit, unlimited = get_quota(user)
+    print(json.dumps({
+        "user": user,
+        "quota_remaining": remaining,
+        "quota_limit": limit,
+        "unlimited": unlimited,
+    }))
+
+
+def cmd_recent():
+    """Return today's unblock history for the current user."""
+    user = get_user()
+    history = get_recent(user)
+    print(json.dumps({
+        "user": user,
+        "history": history,
+    }))
+
+
+def cmd_unblock(ip, force=False):
+    user = get_user()
+
+    if not is_valid_ip(ip):
+        msg = f"Invalid IP address: {ip}"
+        print(f"ERROR: {msg}")
+        audit("unblock", ip, "failure", msg)
+        sys.exit(1)
+
+    # Check quota (skip for sudoers or --force)
+    unlimited = is_sudoer(user)
+    if not force and not unlimited:
+        remaining, _, _ = get_quota(user)
+        if remaining <= 0:
+            msg = f"Daily unblock limit ({MAX_UNBLOCKS_PER_DAY}) reached"
+            print(f"ERROR: {msg}")
+            audit("unblock", ip, "blocked", f"quota_exhausted user={user}")
+            sys.exit(1)
+
+    # Find matching rules
+    rules = list_blocked()
+    matching = [r for r in rules if r["source"] == ip]
+
+    if not matching:
+        msg = f"No iptables DROP/REJECT rule found for IP {ip}"
+        print(f"ERROR: {msg}")
+        audit("unblock", ip, "failure", "no_matching_rule")
+        sys.exit(1)
+
+    # Remove rules
+    removed = 0
+    errors = []
+    for rule in sorted(matching, key=lambda r: int(r["num"]), reverse=True):
+        try:
+            subprocess.check_call(
+                ["iptables", "-D", "INPUT", "-s", ip, "-j", rule["target"]],
+                stderr=subprocess.PIPE, stdout=subprocess.DEVNULL
+            )
+            removed += 1
+        except subprocess.CalledProcessError as e:
+            errors.append(str(e))
+
+    if errors:
+        msg = f"Removed {removed}/{len(matching)} rules for {ip}; errors: {'; '.join(errors)}"
+        print(f"PARTIAL: {msg}")
+        audit("unblock", ip, "partial", msg)
+        if removed > 0 and not force and not unlimited:
+            consume_quota(user)
+        if removed > 0:
+            record_history(user, ip)
+        sys.exit(1)
+
+    # Consume quota and record
+    if not force and not unlimited:
+        remaining, limit, _ = consume_quota(user)
+    else:
+        remaining, limit, _ = get_quota(user)
+
+    record_history(user, ip)
+
+    print(json.dumps({
+        "result": "success",
+        "ip": ip,
+        "rules_removed": removed,
+        "quota_remaining": remaining,
+        "quota_limit": limit,
+        "unlimited": unlimited or force,
+    }))
+    audit("unblock", ip, "success", f"rules_removed={removed}")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def usage():
+    print("Usage: cockpit-ip-unblock-helper [--user <n>] <list|status|unblock <ip> [--force]|recent>")
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if len(args) >= 2 and args[0] == "--user":
+        _CLI_USER = args[1]
+        args = args[2:]
+    elif len(args) >= 3 and args[1] == "--user":
+        _CLI_USER = args[2]
+        args = [args[0]] + args[3:]
+
+    if len(args) < 1:
+        usage()
+
+    cmd = args[0]
+
+    if cmd == "list":
+        cmd_list()
+    elif cmd == "status":
+        cmd_status()
+    elif cmd == "recent":
+        cmd_recent()
+    elif cmd == "unblock":
+        if len(args) < 2:
+            usage()
+        ip = args[1]
+        force = "--force" in args
+        cmd_unblock(ip, force)
+    else:
+        usage()

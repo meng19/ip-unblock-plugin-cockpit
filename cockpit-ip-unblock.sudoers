@@ -1,0 +1,3 @@
+# Allow all users to run the cockpit-ip-unblock-helper without a password.
+# This is required for the Cockpit IP Unblock plugin to work for all users.
+ALL ALL=(root) NOPASSWD: /usr/local/bin/cockpit-ip-unblock-helper

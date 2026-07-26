@@ -1,0 +1,13 @@
+# Cockpit IP Unblock — audit log rotation
+/var/log/cockpit-ip-unblock.log {
+    daily
+    rotate 90
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0644 root adm
+    postrotate
+        /usr/bin/logger -t cockpit-ip-unblock -p auth.notice "Log rotated"
+    endscript
+}

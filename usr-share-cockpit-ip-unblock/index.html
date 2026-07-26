@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html id="ip-unblock-page">
+  <head>
+    <title>IP 自助解封</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link href="ip-unblock.css" type="text/css" rel="stylesheet" />
+    <link href="../../static/branding.css" rel="stylesheet" />
+    <script type="text/javascript" src="../base1/cockpit.js"></script>
+    <script type="text/javascript" src="ip-unblock.js"></script>
+  </head>
+  <body>
+    <div id="app">
+
+      <!-- Header -->
+      <div class="page-header">
+        <div class="page-header-left">
+          <h1 class="page-title" data-i18n="pageTitle">IP 自助解封</h1>
+          <p class="page-subtitle" data-i18n="pageSubtitle">查看并解除 iptables 封禁的 IP 地址。</p>
+        </div>
+        <div class="page-header-right">
+          <button id="lang-toggle" class="lang-btn" title="Switch to English">EN</button>
+        </div>
+      </div>
+
+      <!-- Quota bar -->
+      <div class="quota-bar">
+        <div class="quota-item">
+          <span class="quota-label" data-i18n="signedInAs">当前用户：</span>
+          <strong id="current-user">—</strong>
+        </div>
+        <div class="quota-divider"></div>
+        <div class="quota-item">
+          <span class="quota-label" data-i18n="remainingUnblocks">今日剩余解封次数：</span>
+          <strong id="quota-remaining">—</strong>
+        </div>
+      </div>
+
+      <!-- Message area -->
+      <div id="message-area" class="msg-hidden">
+        <div id="message-content" class="msg-box" role="alert">
+          <span id="message-icon"></span>
+          <span id="message-text"></span>
+          <button id="message-close" class="msg-close" aria-label="关闭">&times;</button>
+        </div>
+      </div>
+
+      <!-- Blocked IPs card -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title" data-i18n="blockedIPs">已封禁的 IP 地址</h2>
+          <div class="card-header-actions">
+            <div id="search-box" class="search-box" style="display: none;">
+              <input type="text" id="search-input" class="search-input"
+                     placeholder="查找 IP..." data-i18n="search" />
+            </div>
+            <button id="refresh-btn" class="btn btn-secondary" type="button">
+              <span class="btn-icon">&#x21bb;</span>
+              <span data-i18n="refresh">刷新</span>
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+
+          <div id="loading-indicator" class="empty-state" style="display: none;">
+            <div class="spinner"></div>
+            <p data-i18n="loading">正在加载已封禁 IP 列表...</p>
+          </div>
+
+          <div id="empty-state" class="empty-state" style="display: none;">
+            <div class="empty-icon">&#x1f6e1;</div>
+            <h3 data-i18n="noBlocked">暂无封禁 IP</h3>
+            <p data-i18n="noBlockedDesc">iptables INPUT 链中没有 DROP 或 REJECT 规则。</p>
+          </div>
+
+          <div id="no-match-state" class="empty-state" style="display: none;">
+            <div class="empty-icon">&#x1f50d;</div>
+            <h3 data-i18n="noMatch">没有匹配的 IP 地址</h3>
+          </div>
+
+          <table id="rules-table" class="table" style="display: none;">
+            <thead>
+              <tr>
+                <th data-i18n="ruleNum">序号</th>
+                <th data-i18n="sourceIP">来源 IP</th>
+                <th data-i18n="target">动作</th>
+                <th data-i18n="action">操作</th>
+              </tr>
+            </thead>
+            <tbody id="rules-table-body"></tbody>
+          </table>
+
+          <!-- Pagination with page jump -->
+          <div id="pagination" class="pagination" style="display: none;">
+            <span id="pagination-info" class="pagination-info"></span>
+            <div class="pagination-buttons">
+              <button id="btn-prev" class="btn btn-sm" type="button" data-i18n="prevPage">上一页</button>
+              <span id="page-info" class="page-info"></span>
+              <button id="btn-next" class="btn btn-sm" type="button" data-i18n="nextPage">下一页</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent unblock records -->
+      <div id="recent-section" class="card" style="margin-top: 16px; display: none;">
+        <div class="card-header">
+          <h2 class="card-title" data-i18n="recentUnblocks">今日解封记录</h2>
+        </div>
+        <div class="card-body">
+          <div id="no-recent" class="empty-state" style="display: none;">
+            <p data-i18n="noRecent">暂无解封记录</p>
+          </div>
+          <table class="table">
+            <thead>
+              <tr>
+                <th style="width: 50%;">时间</th>
+                <th style="width: 50%;">IP 地址</th>
+              </tr>
+            </thead>
+            <tbody id="recent-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Confirm dialog -->
+      <div id="confirm-overlay" class="overlay" style="display: none;">
+        <div class="modal">
+          <div class="modal-header">
+            <h3 data-i18n="confirmTitle">确认解封</h3>
+          </div>
+          <div class="modal-body">
+            <p><span data-i18n="confirmMsg1">确定要解封 IP 地址</span> <strong id="confirm-ip"></strong> <span data-i18n="confirmMsg2">吗？</span></p>
+            <p data-i18n="confirmMsg3">这将移除对应的 iptables 规则，恢复该 IP 的访问权限。</p>
+            <p id="confirm-quota-note" class="quota-note"></p>
+          </div>
+          <div class="modal-footer">
+            <button id="confirm-cancel" class="btn btn-secondary" type="button" data-i18n="cancel">取消</button>
+            <button id="confirm-ok" class="btn btn-danger" type="button" data-i18n="confirm">确认</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </body>
+</html>

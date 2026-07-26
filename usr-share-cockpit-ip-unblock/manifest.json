@@ -1,0 +1,21 @@
+{
+    "requires": {
+        "cockpit": "239"
+    },
+    "menu": {
+        "index": {
+            "label": "IP 自助解封",
+            "order": 99,
+            "keywords": [
+                {
+                    "matches": ["ip", "unblock", "iptables", "firewall", "blocked", "ban", "解封", "封禁"]
+                }
+            ]
+        }
+    },
+    "tools": {
+        "index": {
+            "label": "IP 自助解封"
+        }
+    }
+}
