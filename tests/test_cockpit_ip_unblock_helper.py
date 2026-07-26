@@ -365,3 +365,25 @@ class FirewalldRuleParsingTests(TestCase):
         self.assertIsNone(helper.FirewalldAdapter._parse_rule(
             'rule family="ipv4" source address="203.0.113.7" drop accept'
         ))
+
+
+class FrontendContractTests(TestCase):
+    def test_page_exposes_source_selector_and_source_aware_columns(self):
+        """The UI needs a labelled selector plus source and rule-detail columns."""
+        html = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "index.html").read_text()
+        self.assertIn('id="source-filter"', html)
+        self.assertIn('data-i18n="blockSource"', html)
+        self.assertIn('data-i18n="ruleDetail"', html)
+
+    def test_script_passes_selected_source_and_preserves_history_order(self):
+        """Selecting a source must reach the helper without mutating the fetched history."""
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text()
+        self.assertIn('"--source", selectedSource', script)
+        self.assertIn('history.slice().reverse()', script)
+
+    def test_script_renders_structured_source_results_with_safe_badges(self):
+        """Result details and source labels must be rendered as text, not injected markup."""
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text()
+        self.assertIn('source_results', script)
+        self.assertIn('source-badge', script)
+        self.assertIn('badge.textContent =', script)

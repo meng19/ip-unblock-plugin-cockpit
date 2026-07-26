@@ -142,6 +142,11 @@ code {
   border: 1px solid #0066cc;
   color: #003d7a;
 }
+.msg-box.msg-warning {
+  background: #fff4cc;
+  border: 1px solid #f0ab00;
+  color: #795600;
+}
 #message-icon {
   flex-shrink: 0;
   font-size: 1.1em;
@@ -245,6 +250,7 @@ code {
   width: 100%;
   border-collapse: collapse;
 }
+.table-wrap { overflow-x: auto; }
 .table th,
 .table td {
   text-align: left;
@@ -286,6 +292,11 @@ code {
   color: #8a6d00;
   border: 1px solid #f9e07d;
 }
+.source-badge { text-transform: none; }
+.source-iptables { background: #e8f1fa; color: #004b95; border: 1px solid #9ec5e8; }
+.source-fail2ban { background: #f3e8ff; color: #5b21b6; border: 1px solid #d8b4fe; }
+.source-firewalld { background: #e7f5ec; color: #176b3a; border: 1px solid #a8d5b8; }
+.source-ufw { background: #fff0e1; color: #9a4c00; border: 1px solid #f6c58f; }
 
 /* ── Empty state ────────────────────────────────────────────────── */
 .empty-state {
@@ -316,6 +327,15 @@ code {
 .search-box {
   display: flex;
   align-items: center;
+}
+.source-filter-label { color: #6a6e73; font-size: 0.88rem; }
+.source-filter {
+  padding: 6px 10px;
+  border: 1px solid #d2d2d2;
+  border-radius: 4px;
+  background: #fff;
+  color: #151515;
+  font-size: 0.88rem;
 }
 .search-input {
   padding: 6px 12px;
@@ -448,6 +468,9 @@ code {
   .page-header-right { margin-left: 0; margin-top: 8px; }
   .card-header { flex-wrap: wrap; gap: 8px; }
   .card-header-actions { flex-wrap: wrap; width: 100%; }
+  .source-filter-label { width: 100%; }
+  .source-filter, .search-box { flex: 1 1 160px; }
+  .source-filter { min-width: 0; }
   .search-input { width: 100%; }
   .search-input:focus { width: 100%; }
   .pagination { flex-direction: column; align-items: flex-start; }
@@ -474,6 +497,10 @@ code {
   .badge { background: #333; color: #aaa; }
   .badge-drop { background: #4a1a1a; color: #f28b82; border-color: #6b2020; }
   .badge-reject { background: #4a3a10; color: #fdd663; border-color: #6b5020; }
+  .source-iptables { background: #172b3f; color: #93c5fd; border-color: #315b7d; }
+  .source-fail2ban { background: #30204a; color: #d8b4fe; border-color: #60478c; }
+  .source-firewalld { background: #18372a; color: #9ce0b5; border-color: #356f4f; }
+  .source-ufw { background: #422910; color: #fdba74; border-color: #7e5126; }
   .btn { background: #333; color: #e0e0e0; border-color: #555; }
   .btn:hover { background: #444; }
   .btn-danger { background: #c9190b; color: #fff; }
@@ -482,11 +509,13 @@ code {
   .msg-box.msg-success { background: #1a2e1a; border-color: #3e8635; color: #a0d0a0; }
   .msg-box.msg-error { background: #2e1a1a; border-color: #c9190b; color: #f28b82; }
   .msg-box.msg-info { background: #1a2430; border-color: #0066cc; color: #8cb4e8; }
+  .msg-box.msg-warning { background: #3b2f12; border-color: #b78103; color: #fdd663; }
   .spinner { border-color: #3a3a3a; border-top-color: #4a9eff; }
   .overlay { background: rgba(0,0,0,0.7); }
   .empty-state { color: #a0a0a0; }
   .empty-state h3 { color: #e0e0e0; }
   .search-input { background: #333; color: #e0e0e0; border-color: #555; }
+  .source-filter { background: #333; color: #e0e0e0; border-color: #555; }
   .search-input:focus { border-color: #4a9eff; box-shadow: 0 0 0 2px rgba(74,158,255,0.2); }
   .search-input::placeholder { color: #777; }
   .page-info:hover { background: #333; border-color: #555; }

@@ -16,7 +16,7 @@
       <div class="page-header">
         <div class="page-header-left">
           <h1 class="page-title" data-i18n="pageTitle">IP 自助解封</h1>
-          <p class="page-subtitle" data-i18n="pageSubtitle">查看并解除 iptables 封禁的 IP 地址。</p>
+          <p class="page-subtitle" data-i18n="pageSubtitle">查看并解除多个防火墙来源中的 IP 封禁。</p>
         </div>
         <div class="page-header-right">
           <button id="lang-toggle" class="lang-btn" title="Switch to English">EN</button>
@@ -50,6 +50,8 @@
         <div class="card-header">
           <h2 class="card-title" data-i18n="blockedIPs">已封禁的 IP 地址</h2>
           <div class="card-header-actions">
+            <label class="source-filter-label" for="source-filter" data-i18n="blockSource">封禁来源</label>
+            <select id="source-filter" class="source-filter" aria-label="封禁来源"></select>
             <div id="search-box" class="search-box" style="display: none;">
               <input type="text" id="search-input" class="search-input"
                      placeholder="查找 IP..." data-i18n="search" />
@@ -70,7 +72,7 @@
           <div id="empty-state" class="empty-state" style="display: none;">
             <div class="empty-icon">&#x1f6e1;</div>
             <h3 data-i18n="noBlocked">暂无封禁 IP</h3>
-            <p data-i18n="noBlockedDesc">iptables INPUT 链中没有 DROP 或 REJECT 规则。</p>
+            <p data-i18n="noBlockedDesc">可用来源中没有可自助解除的 IP 封禁。</p>
           </div>
 
           <div id="no-match-state" class="empty-state" style="display: none;">
@@ -78,17 +80,21 @@
             <h3 data-i18n="noMatch">没有匹配的 IP 地址</h3>
           </div>
 
-          <table id="rules-table" class="table" style="display: none;">
+          <div id="rules-table-wrap" class="table-wrap" style="display: none;">
+          <table id="rules-table" class="table">
             <thead>
               <tr>
                 <th data-i18n="ruleNum">序号</th>
                 <th data-i18n="sourceIP">来源 IP</th>
+                <th data-i18n="blockSource">封禁来源</th>
+                <th data-i18n="ruleDetail">规则详情</th>
                 <th data-i18n="target">动作</th>
                 <th data-i18n="action">操作</th>
               </tr>
             </thead>
             <tbody id="rules-table-body"></tbody>
           </table>
+          </div>
 
           <!-- Pagination with page jump -->
           <div id="pagination" class="pagination" style="display: none;">
@@ -131,7 +137,8 @@
           </div>
           <div class="modal-body">
             <p><span data-i18n="confirmMsg1">确定要解封 IP 地址</span> <strong id="confirm-ip"></strong> <span data-i18n="confirmMsg2">吗？</span></p>
-            <p data-i18n="confirmMsg3">这将移除对应的 iptables 规则，恢复该 IP 的访问权限。</p>
+            <p><span data-i18n="confirmSource">来源：</span> <strong id="confirm-source"></strong></p>
+            <p data-i18n="confirmMsg3">这将移除所选来源中与该 IP 精确匹配的封禁规则。</p>
             <p id="confirm-quota-note" class="quota-note"></p>
           </div>
           <div class="modal-footer">

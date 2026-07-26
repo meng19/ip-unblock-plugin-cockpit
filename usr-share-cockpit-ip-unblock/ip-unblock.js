@@ -1,5 +1,5 @@
 /*
- * ip-unblock.js — Cockpit plugin: self-service iptables IP unblock.
+ * ip-unblock.js — Cockpit plugin: self-service multi-source IP unblock.
  */
 (function () {
     "use strict";
@@ -13,7 +13,7 @@
     var LANG = {
         zh: {
             pageTitle: "IP 自助解封",
-            pageSubtitle: "查看并解除 iptables 封禁的 IP 地址。",
+            pageSubtitle: "查看并解除多个防火墙来源中的 IP 封禁。",
             signedInAs: "当前用户：",
             unlimited: "不限次数",
             remainingUnblocks: "今日剩余解封次数：",
@@ -26,19 +26,30 @@
             noMatch: "没有匹配的 IP 地址",
             ruleNum: "序号",
             sourceIP: "来源 IP",
+            blockSource: "封禁来源",
+            allSources: "全部可用来源",
+            ruleDetail: "规则详情",
             target: "动作",
             action: "操作",
             confirmTitle: "确认解封",
             confirmMsg1: "确定要解封 IP 地址",
             confirmMsg2: "吗？",
-            confirmMsg3: "这将移除对应的 iptables 规则，恢复该 IP 的访问权限。",
+            confirmSource: "来源：",
+            confirmMsg3: "这将移除所选来源中与该 IP 精确匹配的封禁规则。",
             cancel: "取消",
             confirm: "确认",
             unblockBtn: "解封",
             quotaExhausted: "已达每日解封上限",
             lastUnblock: "这是今天最后一次解封机会。",
             remainingAfter: "解封后今天还剩 {n} 次。",
-            msgUnblockSuccess: "成功移除 IP {ip} 的 {count} 条规则。剩余解封次数：{remain}/{limit}。",
+            msgUnblockSuccess: "成功移除 IP {ip} 的 {count} 条封禁。剩余解封次数：{remain}/{limit}。",
+            msgUnblockPartial: "IP {ip} 已部分解封（移除 {count} 条封禁）。{results}",
+            msgUnblockNoChange: "未能解除 IP {ip} 的封禁。{results}",
+            sourceResult: "{source}：{status}{detail}",
+            sourceSuccess: "成功（{count}）",
+            sourceNotFound: "未找到匹配项",
+            sourceUnavailable: "不可用",
+            sourceFailed: "失败",
             msgLoadFailed: "加载封禁 IP 列表失败：",
             msgUnblockFailed: "解封失败：",
             msgSudoFailed: "权限不足，请检查 sudo 配置。",
@@ -55,7 +66,7 @@
         },
         en: {
             pageTitle: "IP Unblock",
-            pageSubtitle: "View and remove iptables blocks on IP addresses.",
+            pageSubtitle: "View and remove IP blocks across available firewall sources.",
             signedInAs: "Signed in as: ",
             unlimited: "Unlimited",
             remainingUnblocks: "Remaining unblocks today: ",
@@ -68,12 +79,16 @@
             noMatch: "No matching IP addresses",
             ruleNum: "Rule #",
             sourceIP: "Source IP",
+            blockSource: "Block source",
+            allSources: "All available sources",
+            ruleDetail: "Rule detail",
             target: "Target",
             action: "Action",
             confirmTitle: "Confirm Unblock",
             confirmMsg1: "Are you sure you want to unblock IP address",
             confirmMsg2: "?",
-            confirmMsg3: "This will remove the iptables rule and allow traffic from this IP again.",
+            confirmSource: "Source: ",
+            confirmMsg3: "This removes only exact IP block rules from the selected source.",
             cancel: "Cancel",
             confirm: "Confirm",
             unblockBtn: "Unblock",
@@ -81,6 +96,13 @@
             lastUnblock: "This is your last unblock for today.",
             remainingAfter: "After this, {n} unblock(s) remaining today.",
             msgUnblockSuccess: "Successfully removed {count} rule(s) for IP {ip}. Remaining unblocks: {remain}/{limit}.",
+            msgUnblockPartial: "IP {ip} was partially unblocked ({count} block(s) removed). {results}",
+            msgUnblockNoChange: "No block could be removed for IP {ip}. {results}",
+            sourceResult: "{source}: {status}{detail}",
+            sourceSuccess: "success ({count})",
+            sourceNotFound: "not found",
+            sourceUnavailable: "unavailable",
+            sourceFailed: "failed",
             msgLoadFailed: "Failed to load blocked IPs: ",
             msgUnblockFailed: "Unblock failed: ",
             msgSudoFailed: "Permission denied, check sudo configuration.",
@@ -119,11 +141,21 @@
     var filtered = [];
     var currentPage = 1;
     var pendingUnblockIp = null;
+    var pendingUnblockSource = "all";
 
     /* =================================================================
      *  Helpers
      * ================================================================= */
     function getEl(id) { return document.getElementById(id); }
+
+    function selectedSource() {
+        var select = getEl("source-filter");
+        return select && select.value ? select.value : "all";
+    }
+
+    function sourceLabel(source) {
+        return source === "all" ? t("allSources") : source;
+    }
 
     /* =================================================================
      *  Messages
@@ -164,16 +196,32 @@
     function applyFilter() {
         var input = getEl("search-input");
         var query = input ? input.value.trim().toLowerCase() : "";
+        var source = selectedSource();
         if (!currentData) {
             filtered = [];
-        } else if (!query) {
-            filtered = currentData.blocked_ips || [];
         } else {
             filtered = (currentData.blocked_ips || []).filter(function (r) {
-                return r.source.toLowerCase().indexOf(query) !== -1;
+                return (source === "all" || r.source === source) &&
+                    (!query || r.ip.toLowerCase().indexOf(query) !== -1);
             });
         }
         currentPage = 1;
+    }
+
+    function populateSourceFilter() {
+        var select = getEl("source-filter");
+        if (!select || !currentData) return;
+        var previous = select.value || "all";
+        select.textContent = "";
+        ["all"].concat(currentData.available_sources || []).forEach(function (source) {
+            var option = document.createElement("option");
+            option.value = source;
+            option.textContent = sourceLabel(source);
+            select.appendChild(option);
+        });
+        select.value = Array.prototype.some.call(select.options, function (option) {
+            return option.value === previous;
+        }) ? previous : "all";
     }
 
     /* =================================================================
@@ -210,6 +258,8 @@
         if (!currentData) return;
         var loadingEl = getEl("loading-indicator");
         if (loadingEl) loadingEl.style.display = "none";
+        populateSourceFilter();
+        applyFilter();
         renderQuota();
         renderTable();
         renderPagination();
@@ -236,13 +286,11 @@
     function renderTable() {
         var emptyEl = getEl("empty-state");
         var noMatchEl = getEl("no-match-state");
-        var tableEl = getEl("rules-table");
+        var tableEl = getEl("rules-table-wrap");
         var tbody = getEl("rules-table-body");
         var searchBox = getEl("search-box");
 
-        if (searchBox && currentData.blocked_ips.length > 0) {
-            searchBox.style.display = "flex";
-        }
+        if (searchBox) searchBox.style.display = currentData.blocked_ips.length > 0 ? "flex" : "none";
 
         if (currentData.blocked_ips.length === 0) {
             if (emptyEl) emptyEl.style.display = "block";
@@ -251,8 +299,8 @@
             return;
         }
 
-        var hasQuery = getEl("search-input") && getEl("search-input").value.trim() !== "";
-        if (filtered.length === 0 && hasQuery) {
+        var hasFilter = (getEl("search-input") && getEl("search-input").value.trim() !== "") || selectedSource() !== "all";
+        if (filtered.length === 0 && hasFilter) {
             if (emptyEl) emptyEl.style.display = "none";
             if (noMatchEl) noMatchEl.style.display = "block";
             if (tableEl) tableEl.style.display = "none";
@@ -274,23 +322,36 @@
         var quota = currentData.quota_remaining;
         var unlimited = currentData.unlimited;
 
-        page.forEach(function (rule) {
+        page.forEach(function (rule, index) {
             var tr = document.createElement("tr");
-            ["num", "source"].forEach(function (f) {
+            ["num", "ip"].forEach(function (f) {
                 var td = document.createElement("td");
-                var el = f === "source"
+                var el = f === "ip"
                     ? (function () { var c = document.createElement("code"); c.textContent = rule[f]; return c; })()
-                    : document.createTextNode(rule[f]);
+                    : document.createTextNode(rule.num || (start + index + 1));
                 td.appendChild(el);
                 tr.appendChild(td);
             });
+
+            var tdSource = document.createElement("td");
+            var sourceBadge = document.createElement("span");
+            sourceBadge.className = "badge source-badge source-" + rule.source;
+            sourceBadge.textContent = rule.source;
+            tdSource.appendChild(sourceBadge);
+            tr.appendChild(tdSource);
+
+            var tdRule = document.createElement("td");
+            var ruleCode = document.createElement("code");
+            ruleCode.textContent = rule.rule || "—";
+            tdRule.appendChild(ruleCode);
+            tr.appendChild(tdRule);
 
             var tdT = document.createElement("td");
             var badge = document.createElement("span");
             badge.className = "badge";
             if (rule.target === "DROP") badge.classList.add("badge-drop");
             else if (rule.target === "REJECT") badge.classList.add("badge-reject");
-            badge.textContent = rule.target;
+            badge.textContent = rule.target || rule.scope || "—";
             tdT.appendChild(badge);
             tr.appendChild(tdT);
 
@@ -298,9 +359,10 @@
             var btn = document.createElement("button");
             btn.className = "btn btn-danger btn-sm";
             btn.textContent = t("unblockBtn");
-            btn.setAttribute("data-ip", rule.source);
+            btn.setAttribute("data-ip", rule.ip);
+            btn.setAttribute("data-source", rule.source);
             btn.addEventListener("click", function () {
-                openConfirm(this.getAttribute("data-ip"), unlimited ? -1 : quota);
+                openConfirm(this.getAttribute("data-ip"), this.getAttribute("data-source"), unlimited ? -1 : quota);
             });
             if (!unlimited && quota <= 0) { btn.disabled = true; btn.title = t("quotaExhausted"); }
             tdA.appendChild(btn);
@@ -412,7 +474,7 @@
         if (empty) empty.style.display = "none";
         body.innerHTML = "";
 
-        history.reverse().forEach(function (rec) {
+        history.slice().reverse().forEach(function (rec) {
             var tr = document.createElement("tr");
             var tdTime = document.createElement("td");
             tdTime.textContent = rec.time;
@@ -429,13 +491,16 @@
     /* =================================================================
      *  Confirm dialog
      * ================================================================= */
-    function openConfirm(ip, remaining) {
+    function openConfirm(ip, source, remaining) {
         if (!ip) return;
         pendingUnblockIp = ip;
+        pendingUnblockSource = source || selectedSource();
         var ipEl = getEl("confirm-ip");
+        var sourceEl = getEl("confirm-source");
         var noteEl = getEl("confirm-quota-note");
         var overlay = getEl("confirm-overlay");
         if (ipEl) ipEl.textContent = ip;
+        if (sourceEl) sourceEl.textContent = sourceLabel(pendingUnblockSource);
         if (noteEl) {
             if (remaining < 0) {
                 noteEl.textContent = "";
@@ -458,21 +523,46 @@
     /* =================================================================
      *  Unblock
      * ================================================================= */
-    function doUnblock(ip) {
+    function describeSourceResults(results) {
+        return (results || []).map(function (item) {
+            var statusKey = item.status === "success" ? "sourceSuccess" :
+                item.status === "not_found" ? "sourceNotFound" :
+                item.status === "unavailable" ? "sourceUnavailable" : "sourceFailed";
+            return t("sourceResult", {
+                source: item.source,
+                status: t(statusKey, { count: item.removed || 0 }),
+                detail: item.detail ? " (" + item.detail + ")" : "",
+            });
+        }).join("; ");
+    }
+
+    function doUnblock(ip, source) {
         hideMessage();
-        spawnHelper(["unblock", ip])
+        var selectedSource = source || "all";
+        spawnHelper(["unblock", ip, "--source", selectedSource])
             .then(function (raw) {
                 var result = JSON.parse(raw);
-                showMessage("success", t("msgUnblockSuccess", {
-                    ip: ip, count: result.rules_removed,
-                    remain: result.quota_remaining < 0 ? "∞" : result.quota_remaining,
-                    limit: result.quota_limit < 0 ? "∞" : result.quota_limit,
-                }));
+                var resultText = describeSourceResults(result.source_results);
+                if (result.result === "success") {
+                    showMessage("success", t("msgUnblockSuccess", {
+                        ip: ip, count: result.rules_removed,
+                        remain: result.quota_remaining < 0 ? "∞" : result.quota_remaining,
+                        limit: result.quota_limit < 0 ? "∞" : result.quota_limit,
+                    }) + (resultText ? " " + resultText : ""));
+                } else if (result.result === "partial") {
+                    showMessage("warning", t("msgUnblockPartial", {
+                        ip: ip, count: result.rules_removed, results: resultText,
+                    }));
+                } else {
+                    showMessage("error", t("msgUnblockNoChange", { ip: ip, results: resultText }));
+                }
                 pendingUnblockIp = null;
+                pendingUnblockSource = "all";
                 loadAll();
             })
             .catch(function (err) {
                 pendingUnblockIp = null;
+                pendingUnblockSource = "all";
                 showMessage("error", t("msgUnblockFailed") + String(err.message || err));
                 loadAll();
             });
@@ -520,23 +610,26 @@
         if (el) el.addEventListener("click", hideMessage);
 
         el = getEl("confirm-cancel");
-        if (el) el.addEventListener("click", function () { pendingUnblockIp = null; closeConfirm(); });
+        if (el) el.addEventListener("click", function () { pendingUnblockIp = null; pendingUnblockSource = "all"; closeConfirm(); });
 
         el = getEl("confirm-ok");
         if (el) el.addEventListener("click", function () {
             var ip = pendingUnblockIp;
             if (!ip) return;
             closeConfirm();
-            doUnblock(ip);
+            doUnblock(ip, pendingUnblockSource);
         });
 
         el = getEl("confirm-overlay");
         if (el) el.addEventListener("click", function (e) {
-            if (e.target === el) { pendingUnblockIp = null; closeConfirm(); }
+            if (e.target === el) { pendingUnblockIp = null; pendingUnblockSource = "all"; closeConfirm(); }
         });
 
         el = getEl("search-input");
         if (el) el.addEventListener("input", function () { applyFilter(); renderAll(); });
+
+        el = getEl("source-filter");
+        if (el) el.addEventListener("change", function () { applyFilter(); renderAll(); });
 
         el = getEl("btn-prev");
         if (el) el.addEventListener("click", function () { if (currentPage > 1) { currentPage--; renderAll(); } });
@@ -551,7 +644,7 @@
         setupPageJump();
 
         document.addEventListener("keydown", function (e) {
-            if (e.key === "Escape") { pendingUnblockIp = null; closeConfirm(); }
+            if (e.key === "Escape") { pendingUnblockIp = null; pendingUnblockSource = "all"; closeConfirm(); }
         });
     }
 
