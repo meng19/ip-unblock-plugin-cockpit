@@ -8,6 +8,7 @@ PLUGIN_DIR="/usr/share/cockpit/ip-unblock"
 HELPER="/usr/local/bin/cockpit-ip-unblock-helper"
 STATE_DIR="/var/lib/cockpit"
 LOGROTATE_FILE="/etc/logrotate.d/cockpit-ip-unblock"
+CONFIG_FILE="/etc/cockpit-ip-unblock.conf"
 
 echo "=== Installing Cockpit IP Unblock Plugin ==="
 
@@ -28,6 +29,11 @@ chmod 755 "${HELPER}"
 echo "[3/5] Creating state directory ${STATE_DIR} ..."
 mkdir -p "${STATE_DIR}"
 chmod 755 "${STATE_DIR}"
+
+if [ ! -e "${CONFIG_FILE}" ]; then
+    cp /tmp/ip-unblock-plugin/cockpit-ip-unblock.conf "${CONFIG_FILE}"
+    chmod 640 "${CONFIG_FILE}"
+fi
 
 # 4. Install logrotate config
 echo "[4/5] Installing logrotate config ..."

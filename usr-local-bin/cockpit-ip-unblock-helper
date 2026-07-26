@@ -28,9 +28,12 @@ from ipaddress import ip_address, ip_network
 # Configuration
 # ---------------------------------------------------------------------------
 MAX_UNBLOCKS_PER_DAY = 5
+CONFIG_FILE = "/etc/cockpit-ip-unblock.conf"
 STATE_FILE = "/var/lib/cockpit/ip-unblock-state.json"
 FILE_LOG = "/var/log/cockpit-ip-unblock.log"
 SUDO_GROUP = "sudo"
+DEFAULT_POLICY = {"access_mode": "sudo_only", "daily_unblock_limit": 5,
+                  "show_recent_history": True}
 
 ALLOWED_TARGETS = {"DROP", "REJECT"}
 VALID_SOURCES = ("all", "iptables", "fail2ban", "firewalld", "ufw")
@@ -368,6 +371,27 @@ def get_user():
             "unknown")
 
 
+def load_policy():
+    """Load validated administrator policy, falling back safely on errors."""
+    try:
+        with open(CONFIG_FILE, "r") as fh:
+            configured = json.load(fh)
+        policy = dict(DEFAULT_POLICY)
+        if not isinstance(configured, dict):
+            raise ValueError("configuration must be an object")
+        if configured.get("access_mode", policy["access_mode"]) not in {"all_users", "sudo_only"}:
+            raise ValueError("invalid access_mode")
+        if not isinstance(configured.get("daily_unblock_limit", policy["daily_unblock_limit"]), int) or configured.get("daily_unblock_limit", 5) < 0:
+            raise ValueError("invalid daily_unblock_limit")
+        if not isinstance(configured.get("show_recent_history", policy["show_recent_history"]), bool):
+            raise ValueError("invalid show_recent_history")
+        policy.update(configured)
+        return policy
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        audit("policy", "-", "fallback", str(exc))
+        return dict(DEFAULT_POLICY)
+
+
 def is_sudoer(user):
     """Check if *user* is in the sudo group → unlimited unblocks."""
     try:
@@ -375,6 +399,10 @@ def is_sudoer(user):
         return bool(group and user in group.gr_mem)
     except KeyError:
         return False
+
+
+def is_authorized(user):
+    return load_policy()["access_mode"] == "all_users" or is_sudoer(user)
 
 
 def is_valid_ip(ipstr):
@@ -420,22 +448,24 @@ def save_state(state):
 
 def get_quota(user):
     """Return (remaining, limit, unlimited) for *user* today."""
-    if is_sudoer(user):
+    limit = load_policy()["daily_unblock_limit"]
+    if is_sudoer(user) or limit == 0:
         return -1, -1, True  # unlimited
 
     state = load_state()
     today = date.today().isoformat()
     entry = state.get(user, {})
     if entry.get("date") != today:
-        return MAX_UNBLOCKS_PER_DAY, MAX_UNBLOCKS_PER_DAY, False
+        return limit, limit, False
     used = entry.get("count", 0)
-    remaining = max(0, MAX_UNBLOCKS_PER_DAY - used)
-    return remaining, MAX_UNBLOCKS_PER_DAY, False
+    remaining = max(0, limit - used)
+    return remaining, limit, False
 
 
 def consume_quota(user):
     """Increment today's usage. Returns (remaining, limit, unlimited)."""
-    if is_sudoer(user):
+    limit = load_policy()["daily_unblock_limit"]
+    if is_sudoer(user) or limit == 0:
         return -1, -1, True
 
     state = load_state()
@@ -445,12 +475,12 @@ def consume_quota(user):
         entry = {"date": today, "count": 0, "history": []}
     if "history" not in entry:
         entry["history"] = []
-    if entry.get("count", 0) >= MAX_UNBLOCKS_PER_DAY:
-        return -1, MAX_UNBLOCKS_PER_DAY, False
+    if entry.get("count", 0) >= limit:
+        return -1, limit, False
     entry["count"] = entry.get("count", 0) + 1
     state[user] = entry
     save_state(state)
-    return max(0, MAX_UNBLOCKS_PER_DAY - entry["count"]), MAX_UNBLOCKS_PER_DAY, False
+    return max(0, limit - entry["count"]), limit, False
 
 
 def record_history(user, ip):
@@ -520,6 +550,7 @@ def build_list_payload(user):
         "unlimited": unlimited,
         "available_sources": available_sources,
         "blocked_ips": records,
+        "show_recent_history": load_policy()["show_recent_history"],
     }
 
 
@@ -617,6 +648,9 @@ def _unblock_source(source, ip, matching_count):
 
 def cmd_list():
     user = get_user()
+    if not is_authorized(user):
+        print(json.dumps({"result": "failure", "error": "sudo membership required"}))
+        return
     print(json.dumps(build_list_payload(user)))
 
 
@@ -634,6 +668,9 @@ def cmd_status():
 def cmd_recent():
     """Return today's unblock history for the current user."""
     user = get_user()
+    if not load_policy()["show_recent_history"]:
+        print(json.dumps({"user": user, "history": []}))
+        return
     history = get_recent(user)
     print(json.dumps({
         "user": user,

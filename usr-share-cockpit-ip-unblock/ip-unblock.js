@@ -22,7 +22,7 @@
             search: "查找 IP...",
             loading: "正在加载已封禁 IP 列表...",
             noBlocked: "暂无封禁 IP",
-            noBlockedDesc: "iptables INPUT 链中没有 DROP 或 REJECT 规则。",
+            noBlockedDesc: "当前可用来源中没有可自助解除的 IP 封禁。",
             noMatch: "没有匹配的 IP 地址",
             ruleNum: "序号",
             sourceIP: "来源 IP",
@@ -75,7 +75,7 @@
             search: "Search IP...",
             loading: "Loading blocked IPs...",
             noBlocked: "No Blocked IPs",
-            noBlockedDesc: "There are no DROP or REJECT rules in the iptables INPUT chain.",
+            noBlockedDesc: "There are no self-service unblockable IP blocks in the available sources.",
             noMatch: "No matching IP addresses",
             ruleNum: "Rule #",
             sourceIP: "Source IP",
@@ -229,6 +229,10 @@
         hideMessage();
         var loadingEl = getEl("loading-indicator");
         if (loadingEl) loadingEl.style.display = "block";
+        ["empty-state", "no-match-state", "rules-table-wrap", "pagination"].forEach(function (id) {
+            var el = getEl(id);
+            if (el) el.style.display = "none";
+        });
 
         // Load list and recent in parallel
         var p1 = spawnHelper(["list"]).then(function (raw) {
@@ -454,20 +458,27 @@
      * ================================================================= */
     function renderRecent() {
         var section = getEl("recent-section");
+        var table = getEl("recent-table");
         var body = getEl("recent-body");
         var empty = getEl("no-recent");
         if (!section || !body) return;
+        if (!currentData || !currentData.show_recent_history) {
+            section.style.display = "none";
+            return;
+        }
 
         var history = (recentData && recentData.history) ? recentData.history : [];
 
         if (history.length === 0) {
             section.style.display = "";
+            if (table) table.style.display = "none";
             body.style.display = "none";
             if (empty) empty.style.display = "block";
             return;
         }
 
         section.style.display = "";
+        if (table) table.style.display = "";
         body.style.display = "";
         if (empty) empty.style.display = "none";
         body.innerHTML = "";
