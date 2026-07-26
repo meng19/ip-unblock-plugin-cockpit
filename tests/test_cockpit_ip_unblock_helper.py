@@ -58,6 +58,16 @@ class IptablesAdapterTests(TestCase):
             {"source": "iptables", "ip": "2001:db8::7", "rule": "INPUT: REJECT", "target": "REJECT", "scope": "runtime"},
         ])
 
+    def test_iptables_excludes_inverted_source_rules(self):
+        """An inverted host match blocks its complement and must never be offered for exact-IP deletion."""
+        helper = load_helper()
+        for line in (
+            "-A INPUT ! -s 203.0.113.7/32 -j DROP",
+            "-A INPUT -s ! 203.0.113.7/32 -j DROP",
+        ):
+            with self.subTest(line=line):
+                self.assertIsNone(helper.IptablesAdapter._parse_rule(line))
+
     def test_missing_iptables_is_not_available(self):
         """A missing binary should make the source unavailable without raising."""
         helper = load_helper()
@@ -344,6 +354,30 @@ class MultiSourceCommandTests(TestCase):
                 parsed = helper.parse_cli(["unblock", "203.0.113.7", "--source", source])
                 self.assertEqual(parsed["source"], source)
 
+    def test_parse_cli_rejects_force_quota_bypass(self):
+        """A caller allowed to run the helper must not opt itself out of quota accounting."""
+        helper = load_helper()
+        with self.assertRaises(ValueError):
+            helper.parse_cli(["unblock", "203.0.113.7", "--force"])
+
+
+class TrustedIdentityTests(TestCase):
+    def test_sudo_identity_cannot_be_overridden_by_cli_or_cockpit_values(self):
+        """Quota and sudo membership must use sudo's authenticated invoking user."""
+        helper = load_helper()
+        helper._CLI_USER = "root"
+        with mock.patch.dict(helper.os.environ, {
+            "SUDO_USER": "alice",
+            "COCKPIT_USER": "mallory",
+        }, clear=True):
+            self.assertEqual(helper.get_user(), "alice")
+
+    def test_cockpit_identity_is_used_when_no_sudo_identity_exists(self):
+        """Cockpit's authenticated identity remains available for non-sudo invocation."""
+        helper = load_helper()
+        with mock.patch.dict(helper.os.environ, {"COCKPIT_USER": "alice"}, clear=True):
+            self.assertEqual(helper.get_user(), "alice")
+
 
 class FirewalldRuleParsingTests(TestCase):
     def test_excludes_block_actions_followed_by_malformed_limiter_tokens(self):
@@ -370,20 +404,26 @@ class FirewalldRuleParsingTests(TestCase):
 class FrontendContractTests(TestCase):
     def test_page_exposes_source_selector_and_source_aware_columns(self):
         """The UI needs a labelled selector plus source and rule-detail columns."""
-        html = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "index.html").read_text()
+        html = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="source-filter"', html)
         self.assertIn('data-i18n="blockSource"', html)
         self.assertIn('data-i18n="ruleDetail"', html)
 
     def test_script_passes_selected_source_and_preserves_history_order(self):
         """Selecting a source must reach the helper without mutating the fetched history."""
-        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text()
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
         self.assertIn('"--source", selectedSource', script)
         self.assertIn('history.slice().reverse()', script)
 
+    def test_script_uses_authenticated_sudo_identity_and_all_source_selection(self):
+        """Cockpit must not pass a spoofable user and All must reach the backend as all."""
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
+        self.assertNotIn('fullArgs.push("--user"', script)
+        self.assertIn('openConfirm(this.getAttribute("data-ip"), selectedSource(),', script)
+
     def test_script_renders_structured_source_results_with_safe_badges(self):
         """Result details and source labels must be rendered as text, not injected markup."""
-        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text()
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
         self.assertIn('source_results', script)
         self.assertIn('source-badge', script)
         self.assertIn('badge.textContent =', script)

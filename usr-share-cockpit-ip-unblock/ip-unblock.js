@@ -135,7 +135,6 @@
     /* =================================================================
      *  State
      * ================================================================= */
-    var currentUser = null;
     var currentData = null;
     var recentData = null;
     var filtered = [];
@@ -185,7 +184,6 @@
      * ================================================================= */
     function spawnHelper(args) {
         var fullArgs = ["sudo", "-n", HELPER];
-        if (currentUser) { fullArgs.push("--user", currentUser); }
         fullArgs = fullArgs.concat(args);
         return cockpit.spawn(fullArgs, { err: "message" });
     }
@@ -362,7 +360,7 @@
             btn.setAttribute("data-ip", rule.ip);
             btn.setAttribute("data-source", rule.source);
             btn.addEventListener("click", function () {
-                openConfirm(this.getAttribute("data-ip"), this.getAttribute("data-source"), unlimited ? -1 : quota);
+                openConfirm(this.getAttribute("data-ip"), selectedSource(), unlimited ? -1 : quota);
             });
             if (!unlimited && quota <= 0) { btn.disabled = true; btn.title = t("quotaExhausted"); }
             tdA.appendChild(btn);
@@ -660,9 +658,7 @@
         bindEvents();
         applyI18n();
 
-        cockpit.spawn(["whoami"], { err: "message" })
-            .then(function (name) { currentUser = name.trim(); loadAll(); })
-            .catch(function () { loadAll(); });
+        loadAll();
     }
 
     function onDomReady() {

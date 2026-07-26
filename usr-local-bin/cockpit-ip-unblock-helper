@@ -3,10 +3,10 @@
 Cockpit IP Unblock Helper — backend script for the ip-unblock Cockpit plugin.
 
 Usage:
-    cockpit-ip-unblock-helper --user <name> list
-    cockpit-ip-unblock-helper --user <name> unblock <ip> [--force]
-    cockpit-ip-unblock-helper --user <name> status
-    cockpit-ip-unblock-helper --user <name> recent
+    cockpit-ip-unblock-helper list
+    cockpit-ip-unblock-helper unblock <ip> [--source <source>]
+    cockpit-ip-unblock-helper status
+    cockpit-ip-unblock-helper recent
 
 Rate limiting: per-user daily cap (default 5). Sudo group members unlimited.
 State lives in STATE_FILE. Audit log via syslog + FILE_LOG.
@@ -63,9 +63,6 @@ IPV6_RE = re.compile(
 # Helpers
 # ---------------------------------------------------------------------------
 
-_CLI_USER = None
-
-
 @dataclass
 class CommandResult:
     ok: bool
@@ -119,6 +116,9 @@ class IptablesAdapter:
                 except ValueError:
                     return None
             if source_index + 1 >= len(argv) or target_index + 1 >= len(argv):
+                return None
+            if ((source_index > 0 and argv[source_index - 1] == "!") or
+                    argv[source_index + 1] == "!"):
                 return None
             source = argv[source_index + 1]
             target = argv[target_index + 1]
@@ -362,9 +362,10 @@ class UfwAdapter:
 
 
 def get_user():
-    if _CLI_USER:
-        return _CLI_USER
-    return os.environ.get("COCKPIT_USER", "unknown")
+    """Return the authenticated caller identity supplied by sudo or Cockpit."""
+    return (os.environ.get("SUDO_USER") or
+            os.environ.get("COCKPIT_USER") or
+            "unknown")
 
 
 def is_sudoer(user):
@@ -534,12 +535,12 @@ def _normalize_source_result(adapter, ip):
     return result
 
 
-def unblock_ip(user, ip, source="all", force=False):
+def unblock_ip(user, ip, source="all"):
     """Attempt a safe exact-IP unblock in one source or every available source."""
     if source not in VALID_SOURCES:
         raise ValueError("invalid source")
 
-    unlimited = is_sudoer(user) or force
+    unlimited = is_sudoer(user)
     selected = []
     for adapter in get_adapters():
         if source != "all" and adapter.name != source:
@@ -640,7 +641,7 @@ def cmd_recent():
     }))
 
 
-def cmd_unblock(ip, force=False, source="all"):
+def cmd_unblock(ip, source="all"):
     user = get_user()
 
     if not is_valid_ip(ip):
@@ -649,9 +650,9 @@ def cmd_unblock(ip, force=False, source="all"):
         audit("unblock", ip, "failure", msg)
         sys.exit(1)
 
-    # Check quota (skip for sudoers or --force)
+    # Check quota (sudo group members are unlimited).
     unlimited = is_sudoer(user)
-    if not force and not unlimited:
+    if not unlimited:
         remaining, _, _ = get_quota(user)
         if remaining <= 0:
             msg = f"Daily unblock limit ({MAX_UNBLOCKS_PER_DAY}) reached"
@@ -659,7 +660,7 @@ def cmd_unblock(ip, force=False, source="all"):
             audit("unblock", ip, "blocked", f"quota_exhausted user={user}")
             sys.exit(1)
 
-    payload = unblock_ip(user, ip, source, force)
+    payload = unblock_ip(user, ip, source)
     detail = "; ".join(
         f"{item['source']}: {item['detail'] or item['status']}"
         for item in payload["source_results"] if item["status"] != "success"
@@ -675,7 +676,7 @@ def cmd_unblock(ip, force=False, source="all"):
 # ---------------------------------------------------------------------------
 
 def usage():
-    print("Usage: cockpit-ip-unblock-helper [--user <n>] <list|status|unblock <ip> [--source all|iptables|fail2ban|firewalld|ufw] [--force]|recent>")
+    print("Usage: cockpit-ip-unblock-helper <list|status|unblock <ip> [--source all|iptables|fail2ban|firewalld|ufw]|recent>")
     sys.exit(1)
 
 
@@ -690,16 +691,12 @@ def parse_cli(args):
         return parsed
     if len(args) < 2:
         raise ValueError("missing IP")
-    parsed.update({"ip": args[1], "source": "all", "force": False})
+    parsed.update({"ip": args[1], "source": "all"})
     index = 2
     seen = set()
     while index < len(args):
         flag = args[index]
-        if flag == "--force" and flag not in seen:
-            parsed["force"] = True
-            seen.add(flag)
-            index += 1
-        elif flag == "--source" and flag not in seen and index + 1 < len(args):
+        if flag == "--source" and flag not in seen and index + 1 < len(args):
             source = args[index + 1]
             if source not in VALID_SOURCES:
                 raise ValueError("invalid source")
@@ -713,13 +710,6 @@ def parse_cli(args):
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if len(args) >= 2 and args[0] == "--user":
-        _CLI_USER = args[1]
-        args = args[2:]
-    elif len(args) >= 3 and args[1] == "--user":
-        _CLI_USER = args[2]
-        args = [args[0]] + args[3:]
-
     try:
         parsed = parse_cli(args)
     except ValueError:
@@ -733,6 +723,6 @@ if __name__ == "__main__":
     elif cmd == "recent":
         cmd_recent()
     elif cmd == "unblock":
-        cmd_unblock(parsed["ip"], parsed["force"], parsed["source"])
+        cmd_unblock(parsed["ip"], parsed["source"])
     else:
         usage()
