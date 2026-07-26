@@ -90,3 +90,89 @@ class IptablesAdapterTests(TestCase):
         self.assertEqual(run.call_args_list[1].args[0], [
             "iptables", "-D", "INPUT", "-s", "203.0.113.7/32", "-m", "comment", "--comment", "temporary block", "-j", "DROP",
         ])
+
+
+class Fail2banAdapterTests(TestCase):
+    def test_lists_and_unbans_an_ip_in_each_matching_jail(self):
+        """Dropping a jail from the status parse would leave one of its bans behind."""
+        helper = load_helper()
+        status = "Status\n|- Number of jail:      2\n`- Jail list:   sshd, nginx-auth\n"
+        sshd = "Status for the jail: sshd\n|- Currently banned: 1\n`- Banned IP list: 203.0.113.7\n"
+        nginx = "Status for the jail: nginx-auth\n`- Banned IP list: 203.0.113.7 198.51.100.9\n"
+        with mock.patch.object(helper, "run_command", side_effect=[ok(status), ok(sshd), ok(nginx), ok(status), ok(sshd), ok(), ok(nginx), ok()]) as run:
+            records = helper.Fail2banAdapter().list_blocks()
+            result = helper.Fail2banAdapter().unblock("203.0.113.7")
+        self.assertEqual(records, [
+            {"source": "fail2ban", "ip": "203.0.113.7", "rule": "sshd", "scope": "runtime"},
+            {"source": "fail2ban", "ip": "203.0.113.7", "rule": "nginx-auth", "scope": "runtime"},
+            {"source": "fail2ban", "ip": "198.51.100.9", "rule": "nginx-auth", "scope": "runtime"},
+        ])
+        self.assertEqual(result, {"source": "fail2ban", "status": "success", "removed": 2, "detail": ""})
+        self.assertEqual(run.call_args_list[5].args[0], ["fail2ban-client", "set", "sshd", "unbanip", "203.0.113.7"])
+        self.assertEqual(run.call_args_list[7].args[0], ["fail2ban-client", "set", "nginx-auth", "unbanip", "203.0.113.7"])
+
+    def test_reports_partial_failure_without_raising(self):
+        """A failed jail unban must not prevent another jail's matching ban from being removed."""
+        helper = load_helper()
+        status = "`- Jail list: sshd, nginx-auth\n"
+        jail = "`- Banned IP list: 203.0.113.7\n"
+        with mock.patch.object(helper, "run_command", side_effect=[ok(status), ok(jail), ok(), ok(jail), type("Result", (), {"ok": False, "stdout": "", "stderr": "permission denied", "unavailable": False})()]):
+            result = helper.Fail2banAdapter().unblock("203.0.113.7")
+        self.assertEqual(result, {"source": "fail2ban", "status": "failed", "removed": 1, "detail": "1 of 2 jail unbans failed"})
+
+
+class FirewalldAdapterTests(TestCase):
+    def test_lists_only_exact_host_drop_or_reject_rules_from_both_scopes(self):
+        """A parser accepting CIDRs or non-block actions could expose rules broader than the requested host."""
+        helper = load_helper()
+        runtime = '\n'.join([
+            'rule family="ipv4" source address="203.0.113.7" drop',
+            'rule family="ipv4" source address="203.0.113.0/24" drop',
+            'rule family="ipv4" source address="203.0.113.8" accept',
+        ])
+        permanent = 'rule family="ipv6" source address="2001:db8::7" reject type="icmp6-port-unreachable"\n'
+        with mock.patch.object(helper, "run_command", side_effect=[ok(runtime), ok(permanent)]):
+            records = helper.FirewalldAdapter().list_blocks()
+        self.assertEqual(records, [
+            {"source": "firewalld", "ip": "203.0.113.7", "rule": 'rule family="ipv4" source address="203.0.113.7" drop', "scope": "runtime"},
+            {"source": "firewalld", "ip": "2001:db8::7", "rule": 'rule family="ipv6" source address="2001:db8::7" reject type="icmp6-port-unreachable"', "scope": "permanent"},
+        ])
+
+    def test_unblock_removes_discovered_rich_rules_with_exact_scope(self):
+        """A missing permanent flag or altered rule string would delete the wrong firewalld rule."""
+        helper = load_helper()
+        rule = 'rule family="ipv4" source address="203.0.113.7" drop'
+        with mock.patch.object(helper, "run_command", side_effect=[ok(rule), ok(rule), ok(), ok()]) as run:
+            result = helper.FirewalldAdapter().unblock("203.0.113.7")
+        self.assertEqual(result, {"source": "firewalld", "status": "success", "removed": 2, "detail": ""})
+        self.assertEqual(run.call_args_list[2].args[0], ["firewall-cmd", "--remove-rich-rule", rule])
+        self.assertEqual(run.call_args_list[3].args[0], ["firewall-cmd", "--permanent", "--remove-rich-rule", rule])
+
+
+class UfwAdapterTests(TestCase):
+    def test_lists_host_specific_ipv4_and_ipv6_deny_or_reject_rules_only(self):
+        """Accepting CIDR, ALLOW, or destination-only rows would make unsafe UFW rules removable."""
+        helper = load_helper()
+        output = "\n".join([
+            "22/tcp                     DENY IN     203.0.113.7",
+            "Anywhere                   REJECT IN   2001:db8::7",
+            "80/tcp                     DENY IN     203.0.113.0/24",
+            "443/tcp                    ALLOW IN    198.51.100.9",
+            "22/tcp                     DENY IN     Anywhere",
+        ])
+        with mock.patch.object(helper, "run_command", return_value=ok(output)):
+            records = helper.UfwAdapter().list_blocks()
+        self.assertEqual(records, [
+            {"source": "ufw", "ip": "203.0.113.7", "rule": "DENY", "scope": "runtime"},
+            {"source": "ufw", "ip": "2001:db8::7", "rule": "REJECT", "scope": "runtime"},
+        ])
+
+    def test_unblock_uses_force_and_exact_deny_or_reject_argv(self):
+        """Omitting --force or changing the action could hang or remove a different UFW rule."""
+        helper = load_helper()
+        output = "22/tcp DENY IN 203.0.113.7\nAnywhere REJECT IN 203.0.113.7\n"
+        with mock.patch.object(helper, "run_command", side_effect=[ok(output), ok(), ok()]) as run:
+            result = helper.UfwAdapter().unblock("203.0.113.7")
+        self.assertEqual(result, {"source": "ufw", "status": "success", "removed": 2, "detail": ""})
+        self.assertEqual(run.call_args_list[1].args[0], ["ufw", "--force", "delete", "deny", "from", "203.0.113.7"])
+        self.assertEqual(run.call_args_list[2].args[0], ["ufw", "--force", "delete", "reject", "from", "203.0.113.7"])

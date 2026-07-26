@@ -171,6 +171,181 @@ class IptablesAdapter:
         return removed
 
 
+class Fail2banAdapter:
+    """Bans maintained by fail2ban jails."""
+
+    name = "fail2ban"
+
+    @staticmethod
+    def _jails():
+        result = run_command(["fail2ban-client", "status"])
+        if not result.ok:
+            return None, result
+        for line in result.stdout.splitlines():
+            if "Jail list:" not in line:
+                continue
+            return [jail.strip() for jail in line.split("Jail list:", 1)[1].split(",")
+                    if jail.strip()], result
+        return [], result
+
+    @staticmethod
+    def _banned_ips(jail):
+        result = run_command(["fail2ban-client", "status", jail])
+        if not result.ok:
+            return None, result
+        for line in result.stdout.splitlines():
+            if "Banned IP list:" in line:
+                return line.split("Banned IP list:", 1)[1].split(), result
+        return [], result
+
+    def is_available(self):
+        jails, result = self._jails()
+        return jails is not None and result.ok
+
+    def list_blocks(self):
+        jails, _ = self._jails()
+        if jails is None:
+            return []
+        blocks = []
+        for jail in jails:
+            ips, _ = self._banned_ips(jail)
+            if ips is None:
+                continue
+            blocks.extend({"source": self.name, "ip": ip, "rule": jail, "scope": "runtime"}
+                          for ip in ips if is_valid_ip(ip))
+        return blocks
+
+    def unblock(self, ip):
+        jails, status = self._jails()
+        if jails is None:
+            return {"source": self.name, "status": "unavailable" if status.unavailable else "failed",
+                    "removed": 0, "detail": status.stderr}
+        matching = 0
+        failures = 0
+        removed = 0
+        for jail in jails:
+            ips, result = self._banned_ips(jail)
+            if ips is None:
+                failures += 1
+            elif ip in ips:
+                matching += 1
+                if run_command(["fail2ban-client", "set", jail, "unbanip", ip]).ok:
+                    removed += 1
+                else:
+                    failures += 1
+        if not matching:
+            return {"source": self.name, "status": "not_found", "removed": 0, "detail": ""}
+        if failures:
+            return {"source": self.name, "status": "failed", "removed": removed,
+                    "detail": f"{matching - removed} of {matching} jail unbans failed"}
+        return {"source": self.name, "status": "success", "removed": removed, "detail": ""}
+
+
+class FirewalldAdapter:
+    """Runtime and permanent firewalld rich rules for exact host sources."""
+
+    name = "firewalld"
+    _SOURCE_RE = re.compile(r'\bsource\s+address="([^"]+)"')
+    _ACTION_RE = re.compile(r'\b(drop|reject)\b')
+
+    def is_available(self):
+        return run_command(["firewall-cmd", "--state"]).ok
+
+    @classmethod
+    def _parse_rule(cls, text):
+        source = cls._SOURCE_RE.search(text)
+        action = cls._ACTION_RE.search(text)
+        if not source or not action:
+            return None
+        try:
+            ip = ip_address(source.group(1))
+        except ValueError:
+            return None
+        return str(ip)
+
+    def _rules(self):
+        rules = []
+        for scope, argv in (("runtime", ["firewall-cmd", "--list-rich-rules"]),
+                            ("permanent", ["firewall-cmd", "--permanent", "--list-rich-rules"])):
+            result = run_command(argv)
+            if not result.ok:
+                continue
+            for text in result.stdout.splitlines():
+                ip = self._parse_rule(text)
+                if ip:
+                    rules.append({"ip": ip, "rule": text, "scope": scope})
+        return rules
+
+    def list_blocks(self):
+        return [{"source": self.name, **rule} for rule in self._rules()]
+
+    def unblock(self, ip):
+        matches = [rule for rule in self._rules() if rule["ip"] == ip]
+        if not matches:
+            return {"source": self.name, "status": "not_found", "removed": 0, "detail": ""}
+        removed = 0
+        failures = 0
+        for rule in matches:
+            argv = ["firewall-cmd"]
+            if rule["scope"] == "permanent":
+                argv.append("--permanent")
+            argv += ["--remove-rich-rule", rule["rule"]]
+            if run_command(argv).ok:
+                removed += 1
+            else:
+                failures += 1
+        if failures:
+            return {"source": self.name, "status": "failed", "removed": removed,
+                    "detail": f"{failures} of {len(matches)} rich rule removals failed"}
+        return {"source": self.name, "status": "success", "removed": removed, "detail": ""}
+
+
+class UfwAdapter:
+    """UFW DENY and REJECT rules with an exact single-host source."""
+
+    name = "ufw"
+
+    def is_available(self):
+        result = run_command(["ufw", "status"])
+        return result.ok and "Status: active" in result.stdout
+
+    @staticmethod
+    def _parse_rule(line):
+        fields = line.split()
+        if len(fields) < 4 or fields[-3] not in {"DENY", "REJECT"} or fields[-2] != "IN":
+            return None
+        try:
+            return str(ip_address(fields[-1])), fields[-3]
+        except ValueError:
+            return None
+
+    def _rules(self):
+        result = run_command(["ufw", "status"])
+        if not result.ok:
+            return []
+        return [rule for line in result.stdout.splitlines() if (rule := self._parse_rule(line))]
+
+    def list_blocks(self):
+        return [{"source": self.name, "ip": ip, "rule": action, "scope": "runtime"}
+                for ip, action in self._rules()]
+
+    def unblock(self, ip):
+        matches = [(rule_ip, action) for rule_ip, action in self._rules() if rule_ip == ip]
+        if not matches:
+            return {"source": self.name, "status": "not_found", "removed": 0, "detail": ""}
+        removed = 0
+        failures = 0
+        for _, action in matches:
+            if run_command(["ufw", "--force", "delete", action.lower(), "from", ip]).ok:
+                removed += 1
+            else:
+                failures += 1
+        if failures:
+            return {"source": self.name, "status": "failed", "removed": removed,
+                    "detail": f"{failures} of {len(matches)} UFW rule removals failed"}
+        return {"source": self.name, "status": "success", "removed": removed, "detail": ""}
+
+
 def get_user():
     if _CLI_USER:
         return _CLI_USER
