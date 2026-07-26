@@ -1,5 +1,7 @@
 import importlib.machinery
 import importlib.util
+import io
+import json
 from pathlib import Path
 import sys
 import types
@@ -176,3 +178,79 @@ class UfwAdapterTests(TestCase):
         self.assertEqual(result, {"source": "ufw", "status": "success", "removed": 2, "detail": ""})
         self.assertEqual(run.call_args_list[1].args[0], ["ufw", "--force", "delete", "deny", "from", "203.0.113.7"])
         self.assertEqual(run.call_args_list[2].args[0], ["ufw", "--force", "delete", "reject", "from", "203.0.113.7"])
+
+
+class AdapterIntegrationTests(TestCase):
+    def test_list_blocked_aggregates_records_from_every_adapter(self):
+        """Leaving an adapter out here makes its discovered blocks unreachable from the CLI."""
+        helper = load_helper()
+        expected = [
+            {"source": "iptables", "ip": "203.0.113.7"},
+            {"source": "fail2ban", "ip": "203.0.113.8"},
+            {"source": "firewalld", "ip": "203.0.113.9"},
+            {"source": "ufw", "ip": "203.0.113.10"},
+        ]
+        adapters = []
+        for record in expected:
+            adapter = mock.Mock()
+            adapter.list_blocks.return_value = [record]
+            adapters.append(adapter)
+        with mock.patch.object(helper, "IptablesAdapter", return_value=adapters[0]), \
+             mock.patch.object(helper, "Fail2banAdapter", return_value=adapters[1]), \
+             mock.patch.object(helper, "FirewalldAdapter", return_value=adapters[2]), \
+             mock.patch.object(helper, "UfwAdapter", return_value=adapters[3]):
+            self.assertEqual(helper.list_blocked(), expected)
+
+    def test_cmd_unblock_aggregates_matching_adapter_results_in_legacy_payload(self):
+        """CLI unblocks must reach every source while retaining the existing result fields."""
+        helper = load_helper()
+        records = [
+            {"source": "iptables", "ip": "203.0.113.7"},
+            {"source": "fail2ban", "ip": "203.0.113.7"},
+            {"source": "firewalld", "ip": "203.0.113.7"},
+            {"source": "ufw", "ip": "203.0.113.7"},
+        ]
+        adapters = []
+        for source, removed in (("iptables", 1), ("fail2ban", 2), ("firewalld", 1), ("ufw", 1)):
+            adapter = mock.Mock()
+            adapter.unblock.return_value = (removed if source == "iptables" else {
+                "source": source, "status": "success", "removed": removed, "detail": "",
+            })
+            adapters.append(adapter)
+        output = io.StringIO()
+        with mock.patch.object(helper, "list_blocked", return_value=records), \
+             mock.patch.object(helper, "IptablesAdapter", return_value=adapters[0]), \
+             mock.patch.object(helper, "Fail2banAdapter", return_value=adapters[1]), \
+             mock.patch.object(helper, "FirewalldAdapter", return_value=adapters[2]), \
+             mock.patch.object(helper, "UfwAdapter", return_value=adapters[3]), \
+             mock.patch.object(helper, "get_user", return_value="alice"), \
+             mock.patch.object(helper, "is_sudoer", return_value=True), \
+             mock.patch.object(helper, "record_history"), \
+             mock.patch.object(helper, "audit"), \
+             mock.patch("sys.stdout", output):
+            helper.cmd_unblock("203.0.113.7")
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(payload["ip"], "203.0.113.7")
+        self.assertEqual(payload["rules_removed"], 5)
+        self.assertEqual(payload["source_results"], [
+            {"source": "iptables", "status": "success", "removed": 1, "detail": ""},
+            {"source": "fail2ban", "status": "success", "removed": 2, "detail": ""},
+            {"source": "firewalld", "status": "success", "removed": 1, "detail": ""},
+            {"source": "ufw", "status": "success", "removed": 1, "detail": ""},
+        ])
+
+
+class FirewalldRuleParsingTests(TestCase):
+    def test_excludes_non_terminal_action_words_in_log_prefix_or_quoted_fields(self):
+        """A log prefix or quoted option mentioning drop/reject is not a blocking action."""
+        helper = load_helper()
+        self.assertIsNone(helper.FirewalldAdapter._parse_rule(
+            'rule family="ipv4" source address="203.0.113.7" log prefix="drop" accept'
+        ))
+        self.assertIsNone(helper.FirewalldAdapter._parse_rule(
+            'rule family="ipv4" source address="203.0.113.7" accept log prefix="reject"'
+        ))
+        self.assertIsNone(helper.FirewalldAdapter._parse_rule(
+            'rule family="ipv4" source address="203.0.113.7" drop accept'
+        ))

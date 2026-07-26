@@ -246,7 +246,6 @@ class FirewalldAdapter:
 
     name = "firewalld"
     _SOURCE_RE = re.compile(r'\bsource\s+address="([^"]+)"')
-    _ACTION_RE = re.compile(r'\b(drop|reject)\b')
 
     def is_available(self):
         return run_command(["firewall-cmd", "--state"]).ok
@@ -254,14 +253,37 @@ class FirewalldAdapter:
     @classmethod
     def _parse_rule(cls, text):
         source = cls._SOURCE_RE.search(text)
-        action = cls._ACTION_RE.search(text)
-        if not source or not action:
+        try:
+            fields = shlex.split(text)
+        except ValueError:
+            return None
+        # Rich-rule actions are standalone terminal grammar tokens. Looking in
+        # raw text would mistake values such as log prefix="drop" for an
+        # action; accepting tokens after an action could also accept malformed
+        # rules such as "drop accept".
+        if not source or not cls._has_terminal_block_action(fields):
             return None
         try:
             ip = ip_address(source.group(1))
         except ValueError:
             return None
         return str(ip)
+
+    @staticmethod
+    def _has_terminal_block_action(fields):
+        for index, field in enumerate(fields):
+            if field not in {"drop", "reject"}:
+                continue
+            trailing = fields[index + 1:]
+            if field == "reject" and trailing and trailing[0].startswith("type="):
+                trailing = trailing[1:]
+            if not trailing:
+                return True
+            if trailing[0] != "limit":
+                continue
+            if all(option.startswith(("value=", "burst=")) for option in trailing[1:]):
+                return True
+        return False
 
     def _rules(self):
         rules = []
@@ -466,7 +488,32 @@ def get_recent(user):
 
 
 def list_blocked():
-    return IptablesAdapter().list_blocks()
+    records = []
+    for adapter_class in (IptablesAdapter, Fail2banAdapter, FirewalldAdapter, UfwAdapter):
+        records.extend(adapter_class().list_blocks())
+    return records
+
+
+def _adapter_for_source(source):
+    return {
+        "iptables": IptablesAdapter,
+        "fail2ban": Fail2banAdapter,
+        "firewalld": FirewalldAdapter,
+        "ufw": UfwAdapter,
+    }.get(source)
+
+
+def _unblock_source(source, ip, matching_count):
+    """Normalize legacy iptables counts and adapter result dictionaries."""
+    result = _adapter_for_source(source)().unblock(ip)
+    if source == "iptables":
+        return {
+            "source": source,
+            "status": "success" if result == matching_count else "failed",
+            "removed": result,
+            "detail": "" if result == matching_count else "one or more rules could not be removed",
+        }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -537,14 +584,29 @@ def cmd_unblock(ip, force=False):
         audit("unblock", ip, "failure", "no_matching_rule")
         sys.exit(1)
 
-    # Remove with the exact discovered rule argv, never a mutable line number.
-    removed = IptablesAdapter().unblock(ip)
-    errors = [] if removed == len(matching) else ["one or more rules could not be removed"]
+    source_results = []
+    for source in ("iptables", "fail2ban", "firewalld", "ufw"):
+        source_matches = [rule for rule in matching if rule["source"] == source]
+        if source_matches:
+            source_results.append(_unblock_source(source, ip, len(source_matches)))
+    removed = sum(result["removed"] for result in source_results)
+    errors = [result for result in source_results if result["status"] != "success"]
 
     if errors:
-        msg = f"Removed {removed}/{len(matching)} rules for {ip}; errors: {'; '.join(errors)}"
-        print(f"PARTIAL: {msg}")
-        audit("unblock", ip, "partial", msg)
+        result = "partial" if removed else "failure"
+        msg = "; ".join(
+            f"{item['source']}: {item['detail'] or item['status']}" for item in errors
+        )
+        print(json.dumps({
+            "result": result,
+            "ip": ip,
+            "rules_removed": removed,
+            "source_results": source_results,
+            "quota_remaining": get_quota(user)[0],
+            "quota_limit": get_quota(user)[1],
+            "unlimited": unlimited or force,
+        }))
+        audit("unblock", ip, result, msg)
         if removed > 0 and not force and not unlimited:
             consume_quota(user)
         if removed > 0:
@@ -563,6 +625,7 @@ def cmd_unblock(ip, force=False):
         "result": "success",
         "ip": ip,
         "rules_removed": removed,
+        "source_results": source_results,
         "quota_remaining": remaining,
         "quota_limit": limit,
         "unlimited": unlimited or force,
