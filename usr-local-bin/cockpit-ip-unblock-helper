@@ -549,6 +549,7 @@ def build_list_payload(user):
         "quota_remaining": remaining,
         "quota_limit": limit,
         "unlimited": unlimited,
+        "can_bulk_unblock": is_authorized(user),
         "available_sources": available_sources,
         "blocked_ips": records,
         "show_recent_history": load_policy()["show_recent_history"],

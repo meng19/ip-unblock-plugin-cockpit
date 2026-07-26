@@ -281,6 +281,17 @@ class MultiSourceCommandTests(TestCase):
             {"source": "ufw", "ip": "203.0.113.9"},
         ])
 
+    def test_list_payload_reports_bulk_permission_from_authorization(self):
+        """The bulk control must be available exactly to authorized users."""
+        helper = load_helper()
+        with mock.patch.object(helper, "get_adapters", return_value=[]), \
+             mock.patch.object(helper, "get_quota", return_value=(5, 5, False)), \
+             mock.patch.object(helper, "is_authorized", side_effect=[True, False]):
+            authorized = helper.build_list_payload("alice")
+            unauthorized = helper.build_list_payload("bob")
+        self.assertIs(authorized["can_bulk_unblock"], True)
+        self.assertIs(unauthorized["can_bulk_unblock"], False)
+
     def test_all_attempts_every_available_source_and_isolates_failure(self):
         """A failed backend cannot prevent later available sources from being attempted."""
         helper = load_helper()
