@@ -80,3 +80,13 @@ class IptablesAdapterTests(TestCase):
         self.assertEqual(run.call_args_list[1].args[0], [
             "iptables", "-D", "INPUT", "-s", "203.0.113.7/32", "-p", "tcp", "--dport", "443", "-j", "DROP",
         ])
+
+    def test_iptables_unblock_preserves_quoted_rule_arguments(self):
+        """Deletion must keep quoted -S arguments as one argv element."""
+        helper = load_helper()
+        output = '-A INPUT -s 203.0.113.7/32 -m comment --comment "temporary block" -j DROP\n'
+        with mock.patch.object(helper, "run_command", side_effect=[ok(output), ok()]) as run:
+            helper.IptablesAdapter().unblock("203.0.113.7")
+        self.assertEqual(run.call_args_list[1].args[0], [
+            "iptables", "-D", "INPUT", "-s", "203.0.113.7/32", "-m", "comment", "--comment", "temporary block", "-j", "DROP",
+        ])
