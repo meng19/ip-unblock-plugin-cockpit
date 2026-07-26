@@ -361,6 +361,108 @@ class MultiSourceCommandTests(TestCase):
             helper.parse_cli(["unblock", "203.0.113.7", "--force"])
 
 
+class BulkUnblockCommandTests(TestCase):
+    def _payload(self, ip, result="success", removed=1, remaining=-1, unlimited=True):
+        return {
+            "result": result, "ip": ip, "rules_removed": removed,
+            "source_results": [], "quota_remaining": remaining,
+            "quota_limit": -1 if unlimited else 2, "unlimited": unlimited,
+        }
+
+    def test_parse_cli_accepts_only_strict_bulk_unblock_grammar(self):
+        """Bulk requests need a source selector followed by one or more IP operands."""
+        helper = load_helper()
+        parsed = helper.parse_cli([
+            "bulk-unblock", "--source", "fail2ban", "203.0.113.7", "2001:db8::7",
+        ])
+        self.assertEqual(parsed, {
+            "command": "bulk-unblock", "source": "fail2ban",
+            "ips": ["203.0.113.7", "2001:db8::7"],
+        })
+        for args in (
+            ["bulk-unblock", "203.0.113.7", "--source", "all"],
+            ["bulk-unblock", "--source", "nftables", "203.0.113.7"],
+            ["bulk-unblock", "--source", "all"],
+            ["bulk-unblock", "--source", "all", "203.0.113.7", "--source", "ufw"],
+            ["bulk-unblock", "--source", "all"] + ["203.0.113.7"] * 101,
+        ):
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError):
+                    helper.parse_cli(args)
+
+    def test_cmd_bulk_unblock_rejects_unauthorized_user_before_processing(self):
+        """The helper must enforce policy even if an untrusted client exposes bulk controls."""
+        helper = load_helper()
+        output = io.StringIO()
+        with mock.patch.object(helper, "get_user", return_value="alice"), \
+             mock.patch.object(helper, "is_authorized", return_value=False), \
+             mock.patch.object(helper, "unblock_ip") as unblock, \
+             mock.patch("sys.stdout", output):
+            helper.cmd_bulk_unblock(["203.0.113.7"], "all")
+        self.assertEqual(json.loads(output.getvalue()), {
+            "result": "failure", "error": "sudo membership required",
+        })
+        unblock.assert_not_called()
+
+    def test_sudo_bulk_processes_every_ip_and_forwards_source(self):
+        """Sudo users bypass the daily cap but retain per-IP source-aware results."""
+        helper = load_helper()
+        ips = ["203.0.113.7", "203.0.113.8"]
+        with mock.patch.object(helper, "is_sudoer", return_value=True), \
+             mock.patch.object(helper, "unblock_ip", side_effect=[
+                 self._payload(ips[0]), self._payload(ips[1]),
+             ]) as unblock:
+            payload = helper.bulk_unblock("admin", ips, "ufw")
+        self.assertEqual([call.args for call in unblock.call_args_list], [
+            ("admin", ips[0], "ufw"), ("admin", ips[1], "ufw"),
+        ])
+        self.assertEqual(payload["unprocessed_ips"], [])
+        self.assertEqual(payload["summary"], {
+            "requested": 2, "processed": 2, "success": 2,
+            "partial": 0, "failure": 0, "rules_removed": 2,
+        })
+
+    def test_regular_bulk_stops_after_success_exhausts_quota(self):
+        """A regular user must leave later IPs untouched once a successful unblock uses the last slot."""
+        helper = load_helper()
+        ips = ["203.0.113.7", "203.0.113.8", "203.0.113.9"]
+        with mock.patch.object(helper, "is_sudoer", return_value=False), \
+             mock.patch.object(helper, "get_quota", side_effect=[(1, 2, False), (0, 2, False), (0, 2, False)]), \
+             mock.patch.object(helper, "unblock_ip", return_value=self._payload(
+                 ips[0], remaining=0, unlimited=False)) as unblock:
+            payload = helper.bulk_unblock("alice", ips, "all")
+        unblock.assert_called_once_with("alice", ips[0], "all")
+        self.assertEqual(payload["unprocessed_ips"], ips[1:])
+        self.assertEqual(payload["summary"]["processed"], 1)
+
+    def test_policy_unlimited_regular_user_does_not_stop_batch(self):
+        """A zero policy cap remains unlimited for regular users, as in the single-IP path."""
+        helper = load_helper()
+        ips = ["203.0.113.7", "203.0.113.8"]
+        with mock.patch.object(helper, "is_sudoer", return_value=False), \
+             mock.patch.object(helper, "get_quota", return_value=(-1, -1, True)), \
+             mock.patch.object(helper, "unblock_ip", side_effect=[
+                 self._payload(ips[0]), self._payload(ips[1]),
+             ]) as unblock:
+            payload = helper.bulk_unblock("alice", ips, "all")
+        self.assertEqual(unblock.call_count, 2)
+        self.assertEqual(payload["unprocessed_ips"], [])
+
+    def test_bulk_isolates_one_ip_failure_and_continues(self):
+        """An unexpected per-IP failure cannot suppress later independent unblocks."""
+        helper = load_helper()
+        ips = ["203.0.113.7", "203.0.113.8"]
+        with mock.patch.object(helper, "is_sudoer", return_value=True), \
+             mock.patch.object(helper, "unblock_ip", side_effect=[RuntimeError("backend down"),
+                 self._payload(ips[1])]):
+            payload = helper.bulk_unblock("admin", ips, "all")
+        self.assertEqual(payload["results"][0]["result"], "failure")
+        self.assertEqual(payload["results"][0]["ip"], ips[0])
+        self.assertEqual(payload["results"][1]["result"], "success")
+        self.assertEqual(payload["summary"]["failure"], 1)
+        self.assertEqual(payload["summary"]["success"], 1)
+
+
 class TrustedIdentityTests(TestCase):
     def test_sudo_identity_cannot_be_overridden_by_cli_or_cockpit_values(self):
         """Quota and sudo membership must use sudo's authenticated invoking user."""

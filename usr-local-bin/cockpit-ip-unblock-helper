@@ -28,6 +28,7 @@ from ipaddress import ip_address, ip_network
 # Configuration
 # ---------------------------------------------------------------------------
 MAX_UNBLOCKS_PER_DAY = 5
+MAX_BULK_UNBLOCKS = 100
 CONFIG_FILE = "/etc/cockpit-ip-unblock.conf"
 STATE_FILE = "/var/lib/cockpit/ip-unblock-state.json"
 FILE_LOG = "/var/log/cockpit-ip-unblock.log"
@@ -620,6 +621,57 @@ def unblock_ip(user, ip, source="all"):
     }
 
 
+def bulk_unblock(user, ips, source):
+    """Run the existing single-IP orchestration for a bounded batch.
+
+    A regular user's quota is checked before each new IP so items after the
+    successful operation that exhausts it remain explicitly unprocessed.
+    """
+    if source not in VALID_SOURCES:
+        raise ValueError("invalid source")
+    if not ips or len(ips) > MAX_BULK_UNBLOCKS:
+        raise ValueError("invalid bulk request size")
+
+    unlimited = is_sudoer(user)
+    results = []
+    unprocessed_ips = []
+    for index, ip in enumerate(ips):
+        if not unlimited:
+            remaining, _, quota_unlimited = get_quota(user)
+            if not quota_unlimited and remaining <= 0:
+                unprocessed_ips = ips[index:]
+                break
+        try:
+            payload = unblock_ip(user, ip, source)
+        except Exception as exc:
+            payload = {
+                "result": "failure", "ip": ip, "rules_removed": 0,
+                "source_results": [], "error": str(exc),
+            }
+        results.append(payload)
+
+    summary = {
+        "requested": len(ips),
+        "processed": len(results),
+        "success": sum(item.get("result") == "success" for item in results),
+        "partial": sum(item.get("result") == "partial" for item in results),
+        "failure": sum(item.get("result") == "failure" for item in results),
+        "rules_removed": sum(item.get("rules_removed", 0) for item in results),
+    }
+    remaining, limit, quota_unlimited = get_quota(user)
+    return {
+        "result": "success" if summary["failure"] == 0 and not unprocessed_ips
+                  else "partial" if results else "failure",
+        "source": source,
+        "results": results,
+        "summary": summary,
+        "unprocessed_ips": unprocessed_ips,
+        "quota_remaining": remaining,
+        "quota_limit": limit,
+        "unlimited": quota_unlimited,
+    }
+
+
 def _adapter_for_source(source):
     return {
         "iptables": IptablesAdapter,
@@ -708,12 +760,31 @@ def cmd_unblock(ip, source="all"):
         sys.exit(1)
 
 
+def cmd_bulk_unblock(ips, source):
+    """Validate and execute a bulk request, enforcing policy server-side."""
+    user = get_user()
+    if not is_authorized(user):
+        print(json.dumps({"result": "failure", "error": "sudo membership required"}))
+        audit("bulk-unblock", ",".join(ips), "failure", "unauthorized")
+        return
+    invalid_ips = [ip for ip in ips if not is_valid_ip(ip)]
+    if invalid_ips:
+        msg = f"Invalid IP address: {invalid_ips[0]}"
+        print(json.dumps({"result": "failure", "error": msg}))
+        audit("bulk-unblock", invalid_ips[0], "failure", msg)
+        return
+    payload = bulk_unblock(user, ips, source)
+    print(json.dumps(payload))
+    audit("bulk-unblock", ",".join(ips), payload["result"],
+          f"processed={payload['summary']['processed']} rules_removed={payload['summary']['rules_removed']}")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
 def usage():
-    print("Usage: cockpit-ip-unblock-helper <list|status|unblock <ip> [--source all|iptables|fail2ban|firewalld|ufw]|recent>")
+    print("Usage: cockpit-ip-unblock-helper <list|status|unblock <ip> [--source all|iptables|fail2ban|firewalld|ufw]|bulk-unblock --source <source> <ip>...|recent>")
     sys.exit(1)
 
 
@@ -722,6 +793,13 @@ def parse_cli(args):
     if not args:
         raise ValueError("missing command")
     parsed = {"command": args[0]}
+    if args[0] == "bulk-unblock":
+        if len(args) < 4 or args[1] != "--source" or args[2] not in VALID_SOURCES:
+            raise ValueError("invalid bulk-unblock syntax")
+        ips = args[3:]
+        if len(ips) > MAX_BULK_UNBLOCKS or any(ip.startswith("-") for ip in ips):
+            raise ValueError("invalid bulk-unblock IPs")
+        return {"command": "bulk-unblock", "source": args[2], "ips": ips}
     if args[0] != "unblock":
         if len(args) != 1:
             raise ValueError("unexpected arguments")
@@ -761,5 +839,7 @@ if __name__ == "__main__":
         cmd_recent()
     elif cmd == "unblock":
         cmd_unblock(parsed["ip"], parsed["source"])
+    elif cmd == "bulk-unblock":
+        cmd_bulk_unblock(parsed["ips"], parsed["source"])
     else:
         usage()
