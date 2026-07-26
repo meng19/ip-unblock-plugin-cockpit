@@ -19,7 +19,9 @@ import re
 import subprocess
 import sys
 import syslog
+from dataclasses import dataclass
 from datetime import date, datetime
+from ipaddress import ip_address, ip_network
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -60,6 +62,109 @@ IPV6_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 _CLI_USER = None
+
+
+@dataclass
+class CommandResult:
+    ok: bool
+    stdout: str
+    stderr: str
+    unavailable: bool = False
+
+
+def run_command(argv):
+    """Run *argv* without a shell and return its captured result."""
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, timeout=10, check=False
+        )
+    except FileNotFoundError:
+        return CommandResult(False, "", f"command unavailable: {argv[0]}", True)
+    except subprocess.TimeoutExpired as exc:
+        return CommandResult(False, exc.stdout or "", exc.stderr or "")
+    return CommandResult(
+        completed.returncode == 0, completed.stdout, completed.stderr
+    )
+
+
+class IptablesAdapter:
+    """Runtime INPUT-chain block rules provided by the iptables command."""
+
+    def is_available(self):
+        return run_command(["iptables", "--version"]).ok
+
+    @staticmethod
+    def _parse_rule(line):
+        argv = line.split()
+        if len(argv) >= 2 and argv[:2] == ["-A", "INPUT"]:
+            try:
+                source_index = argv.index("-s")
+            except ValueError:
+                try:
+                    source_index = argv.index("--source")
+                except ValueError:
+                    return None
+            try:
+                target_index = argv.index("-j")
+            except ValueError:
+                try:
+                    target_index = argv.index("--jump")
+                except ValueError:
+                    return None
+            if source_index + 1 >= len(argv) or target_index + 1 >= len(argv):
+                return None
+            source = argv[source_index + 1]
+            target = argv[target_index + 1]
+        elif len(argv) >= 5 and argv[0].isdigit():
+            # Compatibility for callers/tests that provide iptables -L output.
+            source = argv[4]
+            target = argv[1]
+            argv = ["-A", "INPUT", "-s", source, "-j", target]
+        else:
+            return None
+        try:
+            address = ip_address(source.split("/", 1)[0])
+            network = ip_network(source, strict=False)
+        except ValueError:
+            return None
+        if network.prefixlen != network.max_prefixlen:
+            return None
+        if target not in ALLOWED_TARGETS:
+            return None
+        return {
+            "ip": str(address),
+            "target": target,
+            "argv": argv,
+        }
+
+    def _rules(self):
+        result = run_command(["iptables", "-S", "INPUT"])
+        if not result.ok:
+            return []
+        return [rule for line in result.stdout.splitlines()
+                if (rule := self._parse_rule(line))]
+
+    def list_blocks(self):
+        return [
+            {
+                "source": "iptables",
+                "ip": rule["ip"],
+                "rule": f"INPUT: {rule['target']}",
+                "target": rule["target"],
+                "scope": "runtime",
+            }
+            for rule in self._rules()
+        ]
+
+    def unblock(self, ip):
+        removed = 0
+        for rule in self._rules():
+            if rule["ip"] != ip:
+                continue
+            delete_argv = ["iptables", "-D"] + rule["argv"][1:]
+            if run_command(delete_argv).ok:
+                removed += 1
+        return removed
 
 
 def get_user():
@@ -182,34 +287,7 @@ def get_recent(user):
 
 
 def list_blocked():
-    try:
-        out = subprocess.check_output(
-            ["iptables", "-L", "INPUT", "-n", "--line-numbers"],
-            stderr=subprocess.STDOUT, text=True
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: iptables failed: {e.output}")
-        sys.exit(1)
-
-    rules = []
-    for line in out.splitlines():
-        line = line.strip()
-        if line.startswith("Chain ") or line.startswith("num "):
-            continue
-        if not line:
-            continue
-        parts = line.split()
-        if len(parts) < 5:
-            continue
-        target = parts[1]
-        if target not in ALLOWED_TARGETS:
-            continue
-        rules.append({
-            "num": parts[0],
-            "target": target,
-            "source": parts[4],
-        })
-    return rules
+    return IptablesAdapter().list_blocks()
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +350,7 @@ def cmd_unblock(ip, force=False):
 
     # Find matching rules
     rules = list_blocked()
-    matching = [r for r in rules if r["source"] == ip]
+    matching = [r for r in rules if r["ip"] == ip]
 
     if not matching:
         msg = f"No iptables DROP/REJECT rule found for IP {ip}"
@@ -280,18 +358,9 @@ def cmd_unblock(ip, force=False):
         audit("unblock", ip, "failure", "no_matching_rule")
         sys.exit(1)
 
-    # Remove rules
-    removed = 0
-    errors = []
-    for rule in sorted(matching, key=lambda r: int(r["num"]), reverse=True):
-        try:
-            subprocess.check_call(
-                ["iptables", "-D", "INPUT", "-s", ip, "-j", rule["target"]],
-                stderr=subprocess.PIPE, stdout=subprocess.DEVNULL
-            )
-            removed += 1
-        except subprocess.CalledProcessError as e:
-            errors.append(str(e))
+    # Remove with the exact discovered rule argv, never a mutable line number.
+    removed = IptablesAdapter().unblock(ip)
+    errors = [] if removed == len(matching) else ["one or more rules could not be removed"]
 
     if errors:
         msg = f"Removed {removed}/{len(matching)} rules for {ip}; errors: {'; '.join(errors)}"
