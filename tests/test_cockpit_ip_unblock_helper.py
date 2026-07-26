@@ -241,6 +241,110 @@ class AdapterIntegrationTests(TestCase):
         ])
 
 
+class MultiSourceCommandTests(TestCase):
+    def _adapter(self, source, available=True, records=None, result=None):
+        adapter = mock.Mock()
+        adapter.name = source
+        adapter.is_available.return_value = available
+        adapter.list_blocks.return_value = records or []
+        adapter.unblock.return_value = result or {
+            "source": source, "status": "not_found", "removed": 0, "detail": "",
+        }
+        return adapter
+
+    def test_list_payload_reports_available_sources_and_unified_records(self):
+        """The list contract must expose every available backend and its source-tagged rows."""
+        helper = load_helper()
+        adapters = [
+            self._adapter("iptables", True, [{"source": "iptables", "ip": "203.0.113.7"}]),
+            self._adapter("fail2ban", False),
+            self._adapter("firewalld", True, [{"source": "firewalld", "ip": "203.0.113.8"}]),
+            self._adapter("ufw", True, [{"source": "ufw", "ip": "203.0.113.9"}]),
+        ]
+        with mock.patch.object(helper, "get_adapters", return_value=adapters), \
+             mock.patch.object(helper, "get_quota", return_value=(5, 5, False)):
+            payload = helper.build_list_payload("alice")
+        self.assertEqual(payload["available_sources"], ["iptables", "firewalld", "ufw"])
+        self.assertEqual(payload["blocked_ips"], [
+            {"source": "iptables", "ip": "203.0.113.7"},
+            {"source": "firewalld", "ip": "203.0.113.8"},
+            {"source": "ufw", "ip": "203.0.113.9"},
+        ])
+
+    def test_all_attempts_every_available_source_and_isolates_failure(self):
+        """A failed backend cannot prevent later available sources from being attempted."""
+        helper = load_helper()
+        iptables = self._adapter("iptables", True, result={
+            "source": "iptables", "status": "success", "removed": 1, "detail": "",
+        })
+        fail2ban = self._adapter("fail2ban", True, result={
+            "source": "fail2ban", "status": "failed", "removed": 0, "detail": "denied",
+        })
+        firewalld = self._adapter("firewalld", True, result={
+            "source": "firewalld", "status": "success", "removed": 2, "detail": "",
+        })
+        with mock.patch.object(helper, "get_adapters", return_value=[iptables, fail2ban, firewalld]), \
+             mock.patch.object(helper, "consume_quota", return_value=(4, 5, False)) as consume, \
+             mock.patch.object(helper, "record_history") as history:
+            payload = helper.unblock_ip("alice", "203.0.113.7", "all")
+        self.assertEqual(payload["result"], "partial")
+        self.assertEqual(payload["rules_removed"], 3)
+        self.assertEqual(payload["source_results"], [
+            iptables.unblock.return_value, fail2ban.unblock.return_value, firewalld.unblock.return_value,
+        ])
+        consume.assert_called_once_with("alice")
+        history.assert_called_once_with("alice", "203.0.113.7")
+
+    def test_requested_source_only_invokes_that_source(self):
+        """Selecting one source must not touch any other backend."""
+        helper = load_helper()
+        iptables = self._adapter("iptables", True)
+        fail2ban = self._adapter("fail2ban", True, result={
+            "source": "fail2ban", "status": "success", "removed": 1, "detail": "",
+        })
+        with mock.patch.object(helper, "get_adapters", return_value=[iptables, fail2ban]), \
+             mock.patch.object(helper, "consume_quota", return_value=(4, 5, False)), \
+             mock.patch.object(helper, "record_history"):
+            payload = helper.unblock_ip("alice", "203.0.113.7", "fail2ban")
+        self.assertEqual(payload["result"], "success")
+        iptables.unblock.assert_not_called()
+        fail2ban.unblock.assert_called_once_with("203.0.113.7")
+
+    def test_no_removal_does_not_consume_quota_or_record_history(self):
+        """Quota and history advance only after at least one deletion succeeds."""
+        helper = load_helper()
+        adapter = self._adapter("ufw", True)
+        with mock.patch.object(helper, "get_adapters", return_value=[adapter]), \
+             mock.patch.object(helper, "consume_quota") as consume, \
+             mock.patch.object(helper, "record_history") as history, \
+             mock.patch.object(helper, "get_quota", return_value=(5, 5, False)):
+            payload = helper.unblock_ip("alice", "203.0.113.7", "all")
+        self.assertEqual(payload["result"], "failure")
+        self.assertEqual(payload["rules_removed"], 0)
+        consume.assert_not_called()
+        history.assert_not_called()
+
+    def test_parse_cli_rejects_invalid_duplicate_or_valueless_source(self):
+        """Only one explicit source from the fixed allow-list is valid for unblock."""
+        helper = load_helper()
+        for args in (
+            ["unblock", "203.0.113.7", "--source", "nftables"],
+            ["unblock", "203.0.113.7", "--source", "iptables", "--source", "ufw"],
+            ["unblock", "203.0.113.7", "--source"],
+        ):
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError):
+                    helper.parse_cli(args)
+
+    def test_parse_cli_accepts_each_allowed_source(self):
+        """The CLI accepts all four concrete sources plus the all-sources selector."""
+        helper = load_helper()
+        for source in ("all", "iptables", "fail2ban", "firewalld", "ufw"):
+            with self.subTest(source=source):
+                parsed = helper.parse_cli(["unblock", "203.0.113.7", "--source", source])
+                self.assertEqual(parsed["source"], source)
+
+
 class FirewalldRuleParsingTests(TestCase):
     def test_excludes_block_actions_followed_by_malformed_limiter_tokens(self):
         """A bare limiter after an action is malformed and must not be removable."""

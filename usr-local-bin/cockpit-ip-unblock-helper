@@ -33,6 +33,7 @@ FILE_LOG = "/var/log/cockpit-ip-unblock.log"
 SUDO_GROUP = "sudo"
 
 ALLOWED_TARGETS = {"DROP", "REJECT"}
+VALID_SOURCES = ("all", "iptables", "fail2ban", "firewalld", "ufw")
 
 IPV4_RE = re.compile(
     r"^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}"
@@ -90,6 +91,8 @@ def run_command(argv):
 
 class IptablesAdapter:
     """Runtime INPUT-chain block rules provided by the iptables command."""
+
+    name = "iptables"
 
     def is_available(self):
         return run_command(["iptables", "--version"]).ok
@@ -368,7 +371,7 @@ def is_sudoer(user):
     """Check if *user* is in the sudo group → unlimited unblocks."""
     try:
         group = grp.getgrnam(SUDO_GROUP)
-        return user in group.gr_mem
+        return bool(group and user in group.gr_mem)
     except KeyError:
         return False
 
@@ -484,6 +487,107 @@ def list_blocked():
     return records
 
 
+def get_adapters():
+    """Return unblock adapters in their stable CLI presentation order."""
+    adapters = []
+    for source, adapter_class in (
+        ("iptables", IptablesAdapter),
+        ("fail2ban", Fail2banAdapter),
+        ("firewalld", FirewalldAdapter),
+        ("ufw", UfwAdapter),
+    ):
+        adapter = adapter_class()
+        adapter.name = source
+        adapters.append(adapter)
+    return adapters
+
+
+def build_list_payload(user):
+    """Build the source-aware list response while retaining the legacy fields."""
+    remaining, limit, unlimited = get_quota(user)
+    available_sources = []
+    records = []
+    for adapter in get_adapters():
+        if not adapter.is_available():
+            continue
+        available_sources.append(adapter.name)
+        records.extend(adapter.list_blocks())
+    return {
+        "user": user,
+        "quota_remaining": remaining,
+        "quota_limit": limit,
+        "unlimited": unlimited,
+        "available_sources": available_sources,
+        "blocked_ips": records,
+    }
+
+
+def _normalize_source_result(adapter, ip):
+    result = adapter.unblock(ip)
+    if isinstance(result, int):
+        return {
+            "source": adapter.name,
+            "status": "success" if result else "not_found",
+            "removed": result,
+            "detail": "",
+        }
+    return result
+
+
+def unblock_ip(user, ip, source="all", force=False):
+    """Attempt a safe exact-IP unblock in one source or every available source."""
+    if source not in VALID_SOURCES:
+        raise ValueError("invalid source")
+
+    unlimited = is_sudoer(user) or force
+    selected = []
+    for adapter in get_adapters():
+        if source != "all" and adapter.name != source:
+            continue
+        if adapter.is_available():
+            selected.append(adapter)
+        elif source != "all":
+            selected.append(None)
+
+    source_results = []
+    for adapter in selected:
+        if adapter is None:
+            source_results.append({
+                "source": source, "status": "unavailable", "removed": 0,
+                "detail": "source unavailable",
+            })
+            continue
+        try:
+            source_results.append(_normalize_source_result(adapter, ip))
+        except Exception as exc:
+            source_results.append({
+                "source": adapter.name, "status": "failed", "removed": 0,
+                "detail": str(exc),
+            })
+
+    removed = sum(item.get("removed", 0) for item in source_results)
+    failed = [item for item in source_results
+              if item.get("status") in {"failed", "unavailable"}]
+    result = "success" if removed and not failed else "partial" if removed else "failure"
+
+    if removed and not unlimited:
+        remaining, limit, _ = consume_quota(user)
+    else:
+        remaining, limit, _ = get_quota(user)
+    if removed:
+        record_history(user, ip)
+
+    return {
+        "result": result,
+        "ip": ip,
+        "rules_removed": removed,
+        "source_results": source_results,
+        "quota_remaining": remaining,
+        "quota_limit": limit,
+        "unlimited": unlimited,
+    }
+
+
 def _adapter_for_source(source):
     return {
         "iptables": IptablesAdapter,
@@ -512,16 +616,7 @@ def _unblock_source(source, ip, matching_count):
 
 def cmd_list():
     user = get_user()
-    remaining, limit, unlimited = get_quota(user)
-    rules = list_blocked()
-    result = {
-        "user": user,
-        "quota_remaining": remaining,
-        "quota_limit": limit,
-        "unlimited": unlimited,
-        "blocked_ips": rules,
-    }
-    print(json.dumps(result))
+    print(json.dumps(build_list_payload(user)))
 
 
 def cmd_status():
@@ -545,7 +640,7 @@ def cmd_recent():
     }))
 
 
-def cmd_unblock(ip, force=False):
+def cmd_unblock(ip, force=False, source="all"):
     user = get_user()
 
     if not is_valid_ip(ip):
@@ -564,63 +659,15 @@ def cmd_unblock(ip, force=False):
             audit("unblock", ip, "blocked", f"quota_exhausted user={user}")
             sys.exit(1)
 
-    # Find matching rules
-    rules = list_blocked()
-    matching = [r for r in rules if r["ip"] == ip]
-
-    if not matching:
-        msg = f"No iptables DROP/REJECT rule found for IP {ip}"
-        print(f"ERROR: {msg}")
-        audit("unblock", ip, "failure", "no_matching_rule")
+    payload = unblock_ip(user, ip, source, force)
+    detail = "; ".join(
+        f"{item['source']}: {item['detail'] or item['status']}"
+        for item in payload["source_results"] if item["status"] != "success"
+    )
+    print(json.dumps(payload))
+    audit("unblock", ip, payload["result"], detail or f"rules_removed={payload['rules_removed']}")
+    if payload["result"] == "failure":
         sys.exit(1)
-
-    source_results = []
-    for source in ("iptables", "fail2ban", "firewalld", "ufw"):
-        source_matches = [rule for rule in matching if rule["source"] == source]
-        if source_matches:
-            source_results.append(_unblock_source(source, ip, len(source_matches)))
-    removed = sum(result["removed"] for result in source_results)
-    errors = [result for result in source_results if result["status"] != "success"]
-
-    if errors:
-        result = "partial" if removed else "failure"
-        msg = "; ".join(
-            f"{item['source']}: {item['detail'] or item['status']}" for item in errors
-        )
-        print(json.dumps({
-            "result": result,
-            "ip": ip,
-            "rules_removed": removed,
-            "source_results": source_results,
-            "quota_remaining": get_quota(user)[0],
-            "quota_limit": get_quota(user)[1],
-            "unlimited": unlimited or force,
-        }))
-        audit("unblock", ip, result, msg)
-        if removed > 0 and not force and not unlimited:
-            consume_quota(user)
-        if removed > 0:
-            record_history(user, ip)
-        sys.exit(1)
-
-    # Consume quota and record
-    if not force and not unlimited:
-        remaining, limit, _ = consume_quota(user)
-    else:
-        remaining, limit, _ = get_quota(user)
-
-    record_history(user, ip)
-
-    print(json.dumps({
-        "result": "success",
-        "ip": ip,
-        "rules_removed": removed,
-        "source_results": source_results,
-        "quota_remaining": remaining,
-        "quota_limit": limit,
-        "unlimited": unlimited or force,
-    }))
-    audit("unblock", ip, "success", f"rules_removed={removed}")
 
 
 # ---------------------------------------------------------------------------
@@ -628,8 +675,40 @@ def cmd_unblock(ip, force=False):
 # ---------------------------------------------------------------------------
 
 def usage():
-    print("Usage: cockpit-ip-unblock-helper [--user <n>] <list|status|unblock <ip> [--force]|recent>")
+    print("Usage: cockpit-ip-unblock-helper [--user <n>] <list|status|unblock <ip> [--source all|iptables|fail2ban|firewalld|ufw] [--force]|recent>")
     sys.exit(1)
+
+
+def parse_cli(args):
+    """Parse the small fixed CLI grammar without accepting ambiguous flags."""
+    if not args:
+        raise ValueError("missing command")
+    parsed = {"command": args[0]}
+    if args[0] != "unblock":
+        if len(args) != 1:
+            raise ValueError("unexpected arguments")
+        return parsed
+    if len(args) < 2:
+        raise ValueError("missing IP")
+    parsed.update({"ip": args[1], "source": "all", "force": False})
+    index = 2
+    seen = set()
+    while index < len(args):
+        flag = args[index]
+        if flag == "--force" and flag not in seen:
+            parsed["force"] = True
+            seen.add(flag)
+            index += 1
+        elif flag == "--source" and flag not in seen and index + 1 < len(args):
+            source = args[index + 1]
+            if source not in VALID_SOURCES:
+                raise ValueError("invalid source")
+            parsed["source"] = source
+            seen.add(flag)
+            index += 2
+        else:
+            raise ValueError("invalid or duplicate option")
+    return parsed
 
 
 if __name__ == "__main__":
@@ -641,11 +720,12 @@ if __name__ == "__main__":
         _CLI_USER = args[2]
         args = [args[0]] + args[3:]
 
-    if len(args) < 1:
+    try:
+        parsed = parse_cli(args)
+    except ValueError:
         usage()
 
-    cmd = args[0]
-
+    cmd = parsed["command"]
     if cmd == "list":
         cmd_list()
     elif cmd == "status":
@@ -653,10 +733,6 @@ if __name__ == "__main__":
     elif cmd == "recent":
         cmd_recent()
     elif cmd == "unblock":
-        if len(args) < 2:
-            usage()
-        ip = args[1]
-        force = "--force" in args
-        cmd_unblock(ip, force)
+        cmd_unblock(parsed["ip"], parsed["force"], parsed["source"])
     else:
         usage()
