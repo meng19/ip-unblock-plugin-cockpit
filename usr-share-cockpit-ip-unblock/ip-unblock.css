@@ -271,7 +271,7 @@ code {
   border-bottom: none;
 }
 #bulk-select-column,
-.table td:first-child {
+#rules-table-body td:first-child {
   width: 1%;
   white-space: nowrap;
 }

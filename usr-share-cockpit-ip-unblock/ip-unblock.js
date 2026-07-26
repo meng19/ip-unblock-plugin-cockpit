@@ -351,7 +351,7 @@
             selectAll.disabled = !canBulk || filteredList.length === 0;
         }
 
-        if (searchBox) searchBox.style.display = currentData.blocked_ips.length > 0 ? "flex" : "none";
+        if (searchBox) searchBox.style.display = "flex";
 
         if (currentData.blocked_ips.length === 0) {
             if (emptyEl) emptyEl.style.display = "block";
