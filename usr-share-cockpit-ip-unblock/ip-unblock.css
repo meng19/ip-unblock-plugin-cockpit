@@ -270,6 +270,18 @@ code {
 .table tbody tr:last-child td {
   border-bottom: none;
 }
+#bulk-select-column,
+.table td:first-child {
+  width: 1%;
+  white-space: nowrap;
+}
+.table input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: #0066cc;
+}
 
 /* ── Badges ─────────────────────────────────────────────────────── */
 .badge {
@@ -501,6 +513,7 @@ code {
   .source-fail2ban { background: #30204a; color: #d8b4fe; border-color: #60478c; }
   .source-firewalld { background: #18372a; color: #9ce0b5; border-color: #356f4f; }
   .source-ufw { background: #422910; color: #fdba74; border-color: #7e5126; }
+  .table input[type="checkbox"] { accent-color: #4a9eff; }
   .btn { background: #333; color: #e0e0e0; border-color: #555; }
   .btn:hover { background: #444; }
   .btn-danger { background: #c9190b; color: #fff; }

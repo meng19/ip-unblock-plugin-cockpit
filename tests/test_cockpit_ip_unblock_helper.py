@@ -529,3 +529,22 @@ class FrontendContractTests(TestCase):
         self.assertIn('source_results', script)
         self.assertIn('source-badge', script)
         self.assertIn('badge.textContent =', script)
+
+    def test_bulk_ui_has_authorized_selection_controls_and_confirmation(self):
+        """Batch controls must be gated by the list capability and include accessible selection UI."""
+        root = Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        script = (root / "ip-unblock.js").read_text(encoding="utf-8")
+        self.assertIn('id="select-all-blocked"', html)
+        self.assertIn('id="bulk-unblock-btn"', html)
+        self.assertIn('id="bulk-confirm-overlay"', html)
+        self.assertIn('currentData.can_bulk_unblock', script)
+        self.assertIn('selectedBulkIps', script)
+
+    def test_bulk_ui_calls_source_aware_helper_and_reports_unprocessed_ips(self):
+        """Batch requests must preserve the selected source and surface backend partial processing."""
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
+        self.assertIn('["bulk-unblock", "--source", source]', script)
+        self.assertIn('unprocessed_ips', script)
+        self.assertIn('summary', script)
+        self.assertIn('selectedBulkIps = {}', script)

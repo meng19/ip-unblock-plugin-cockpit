@@ -39,6 +39,13 @@
             cancel: "取消",
             confirm: "确认",
             unblockBtn: "解封",
+            bulkUnblockBtn: "批量解封 ({n})",
+            bulkConfirmTitle: "确认批量解封",
+            bulkConfirmMsg: "确定要解封所选的 IP 地址吗？",
+            bulkSelectedCount: "已选择：",
+            bulkConfirmDetail: "每个 IP 都会单独处理；达到额度上限的剩余 IP 将不会处理。",
+            msgBulkResult: "批量解封完成：成功 {success}，部分成功 {partial}，失败 {failure}，移除 {removed} 条规则。",
+            msgBulkUnprocessed: "未处理 {count} 个 IP：{ips}",
             quotaExhausted: "已达每日解封上限",
             lastUnblock: "这是今天最后一次解封机会。",
             remainingAfter: "解封后今天还剩 {n} 次。",
@@ -92,6 +99,13 @@
             cancel: "Cancel",
             confirm: "Confirm",
             unblockBtn: "Unblock",
+            bulkUnblockBtn: "Unblock selected ({n})",
+            bulkConfirmTitle: "Confirm Bulk Unblock",
+            bulkConfirmMsg: "Are you sure you want to unblock the selected IP addresses?",
+            bulkSelectedCount: "Selected:",
+            bulkConfirmDetail: "Each IP is processed individually; IPs left after the quota is exhausted are not processed.",
+            msgBulkResult: "Bulk unblock complete: {success} succeeded, {partial} partial, {failure} failed, and {removed} rule(s) removed.",
+            msgBulkUnprocessed: "{count} IP(s) were not processed: {ips}",
             quotaExhausted: "Daily unblock limit reached",
             lastUnblock: "This is your last unblock for today.",
             remainingAfter: "After this, {n} unblock(s) remaining today.",
@@ -141,6 +155,7 @@
     var currentPage = 1;
     var pendingUnblockIp = null;
     var pendingUnblockSource = "all";
+    var selectedBulkIps = {};
 
     /* =================================================================
      *  Helpers
@@ -154,6 +169,28 @@
 
     function sourceLabel(source) {
         return source === "all" ? t("allSources") : source;
+    }
+
+    function bulkSelectionEnabled() {
+        return !!(currentData && currentData.can_bulk_unblock);
+    }
+
+    function selectedBulkIpList() {
+        return Object.keys(selectedBulkIps);
+    }
+
+    function clearBulkSelection() {
+        selectedBulkIps = {};
+    }
+
+    function reconcileBulkSelection() {
+        var available = {};
+        (currentData && currentData.blocked_ips || []).forEach(function (rule) {
+            available[rule.ip] = true;
+        });
+        Object.keys(selectedBulkIps).forEach(function (ip) {
+            if (!available[ip]) delete selectedBulkIps[ip];
+        });
     }
 
     /* =================================================================
@@ -237,6 +274,7 @@
         // Load list and recent in parallel
         var p1 = spawnHelper(["list"]).then(function (raw) {
             currentData = JSON.parse(raw);
+            reconcileBulkSelection();
             applyFilter(true);
         });
         var p2 = spawnHelper(["recent"]).then(function (raw) {
@@ -291,6 +329,27 @@
         var tableEl = getEl("rules-table-wrap");
         var tbody = getEl("rules-table-body");
         var searchBox = getEl("search-box");
+        var selectAll = getEl("select-all-blocked");
+        var selectColumn = getEl("bulk-select-column");
+        var bulkButton = getEl("bulk-unblock-btn");
+        var canBulk = bulkSelectionEnabled();
+
+        if (selectColumn) selectColumn.style.display = canBulk ? "" : "none";
+        if (bulkButton) {
+            var selectedCount = selectedBulkIpList().length;
+            bulkButton.style.display = canBulk ? "" : "none";
+            bulkButton.disabled = selectedCount === 0;
+            bulkButton.textContent = t("bulkUnblockBtn", { n: selectedCount });
+        }
+        if (selectAll) {
+            var filteredIps = {};
+            filtered.forEach(function (rule) { filteredIps[rule.ip] = true; });
+            var filteredList = Object.keys(filteredIps);
+            var selectedFiltered = filteredList.filter(function (ip) { return selectedBulkIps[ip]; }).length;
+            selectAll.checked = filteredList.length > 0 && selectedFiltered === filteredList.length;
+            selectAll.indeterminate = selectedFiltered > 0 && selectedFiltered < filteredList.length;
+            selectAll.disabled = !canBulk || filteredList.length === 0;
+        }
 
         if (searchBox) searchBox.style.display = currentData.blocked_ips.length > 0 ? "flex" : "none";
 
@@ -326,6 +385,20 @@
 
         page.forEach(function (rule, index) {
             var tr = document.createElement("tr");
+            if (canBulk) {
+                var tdSelect = document.createElement("td");
+                var checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.checked = !!selectedBulkIps[rule.ip];
+                checkbox.setAttribute("aria-label", t("bulkSelectedCount") + " " + rule.ip);
+                checkbox.addEventListener("change", function () {
+                    if (this.checked) selectedBulkIps[rule.ip] = true;
+                    else delete selectedBulkIps[rule.ip];
+                    renderAll();
+                });
+                tdSelect.appendChild(checkbox);
+                tr.appendChild(tdSelect);
+            }
             ["num", "ip"].forEach(function (f) {
                 var td = document.createElement("td");
                 var el = f === "ip"
@@ -529,6 +602,22 @@
         if (overlay) overlay.style.display = "none";
     }
 
+    function openBulkConfirm() {
+        var ips = selectedBulkIpList();
+        if (!bulkSelectionEnabled() || ips.length === 0) return;
+        var countEl = getEl("bulk-confirm-count");
+        var sourceEl = getEl("bulk-confirm-source");
+        var overlay = getEl("bulk-confirm-overlay");
+        if (countEl) countEl.textContent = String(ips.length);
+        if (sourceEl) sourceEl.textContent = sourceLabel(selectedSource());
+        if (overlay) overlay.style.display = "flex";
+    }
+
+    function closeBulkConfirm() {
+        var overlay = getEl("bulk-confirm-overlay");
+        if (overlay) overlay.style.display = "none";
+    }
+
     /* =================================================================
      *  Unblock
      * ================================================================= */
@@ -572,6 +661,38 @@
             .catch(function (err) {
                 pendingUnblockIp = null;
                 pendingUnblockSource = "all";
+                showMessage("error", t("msgUnblockFailed") + String(err.message || err));
+                loadAll();
+            });
+    }
+
+    function doBulkUnblock() {
+        var ips = selectedBulkIpList();
+        if (!bulkSelectionEnabled() || ips.length === 0) return;
+        hideMessage();
+        var source = selectedSource();
+        spawnHelper(["bulk-unblock", "--source", source].concat(ips))
+            .then(function (raw) {
+                var result = JSON.parse(raw);
+                var summary = result.summary || {};
+                var unprocessed = result.unprocessed_ips || [];
+                var processed = (result.results || []).map(function (item) { return item.ip; });
+                processed.forEach(function (ip) { delete selectedBulkIps[ip]; });
+                var message = t("msgBulkResult", {
+                    success: summary.success || 0,
+                    partial: summary.partial || 0,
+                    failure: summary.failure || 0,
+                    removed: summary.rules_removed || 0,
+                });
+                if (unprocessed.length) {
+                    message += " " + t("msgBulkUnprocessed", {
+                        count: unprocessed.length, ips: unprocessed.join(", "),
+                    });
+                }
+                showMessage(unprocessed.length || summary.failure ? "warning" : "success", message);
+                loadAll(true);
+            })
+            .catch(function (err) {
                 showMessage("error", t("msgUnblockFailed") + String(err.message || err));
                 loadAll();
             });
@@ -634,11 +755,35 @@
             if (e.target === el) { pendingUnblockIp = null; pendingUnblockSource = "all"; closeConfirm(); }
         });
 
+        el = getEl("bulk-unblock-btn");
+        if (el) el.addEventListener("click", openBulkConfirm);
+
+        el = getEl("bulk-confirm-cancel");
+        if (el) el.addEventListener("click", closeBulkConfirm);
+
+        el = getEl("bulk-confirm-ok");
+        if (el) el.addEventListener("click", function () { closeBulkConfirm(); doBulkUnblock(); });
+
+        el = getEl("bulk-confirm-overlay");
+        if (el) el.addEventListener("click", function (e) { if (e.target === el) closeBulkConfirm(); });
+
+        el = getEl("select-all-blocked");
+        if (el) el.addEventListener("change", function () {
+            if (!bulkSelectionEnabled()) return;
+            var ips = {};
+            filtered.forEach(function (rule) { ips[rule.ip] = true; });
+            Object.keys(ips).forEach(function (ip) {
+                if (el.checked) selectedBulkIps[ip] = true;
+                else delete selectedBulkIps[ip];
+            });
+            renderAll();
+        });
+
         el = getEl("search-input");
-        if (el) el.addEventListener("input", function () { applyFilter(true); renderAll(); });
+        if (el) el.addEventListener("input", function () { clearBulkSelection(); applyFilter(true); renderAll(); });
 
         el = getEl("source-filter");
-        if (el) el.addEventListener("change", function () { applyFilter(true); renderAll(); });
+        if (el) el.addEventListener("change", function () { clearBulkSelection(); applyFilter(true); renderAll(); });
 
         el = getEl("btn-prev");
         if (el) el.addEventListener("click", function () { if (currentPage > 1) { currentPage--; renderAll(); } });
@@ -653,7 +798,7 @@
         setupPageJump();
 
         document.addEventListener("keydown", function (e) {
-            if (e.key === "Escape") { pendingUnblockIp = null; pendingUnblockSource = "all"; closeConfirm(); }
+            if (e.key === "Escape") { pendingUnblockIp = null; pendingUnblockSource = "all"; closeConfirm(); closeBulkConfirm(); }
         });
     }
 

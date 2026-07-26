@@ -56,6 +56,9 @@
               <input type="text" id="search-input" class="search-input"
                      placeholder="查找 IP..." data-i18n="search" />
             </div>
+            <button id="bulk-unblock-btn" class="btn btn-danger" type="button" style="display: none;" disabled>
+              <span data-i18n="bulkUnblockBtn">批量解封</span>
+            </button>
             <button id="refresh-btn" class="btn btn-secondary" type="button">
               <span class="btn-icon">&#x21bb;</span>
               <span data-i18n="refresh">刷新</span>
@@ -84,6 +87,7 @@
           <table id="rules-table" class="table">
             <thead>
               <tr>
+                <th id="bulk-select-column" style="display: none;"><input id="select-all-blocked" type="checkbox" aria-label="Select all filtered IP addresses" /></th>
                 <th data-i18n="ruleNum">序号</th>
                 <th data-i18n="sourceIP">来源 IP</th>
                 <th data-i18n="blockSource">封禁来源</th>
@@ -144,6 +148,25 @@
           <div class="modal-footer">
             <button id="confirm-cancel" class="btn btn-secondary" type="button" data-i18n="cancel">取消</button>
             <button id="confirm-ok" class="btn btn-danger" type="button" data-i18n="confirm">确认</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bulk unblock confirmation dialog -->
+      <div id="bulk-confirm-overlay" class="overlay" style="display: none;">
+        <div class="modal">
+          <div class="modal-header">
+            <h3 data-i18n="bulkConfirmTitle">确认批量解封</h3>
+          </div>
+          <div class="modal-body">
+            <p data-i18n="bulkConfirmMsg">确定要解封所选的 IP 地址吗？</p>
+            <p><span data-i18n="bulkSelectedCount">已选择：</span> <strong id="bulk-confirm-count"></strong></p>
+            <p><span data-i18n="confirmSource">来源：</span> <strong id="bulk-confirm-source"></strong></p>
+            <p data-i18n="bulkConfirmDetail">每个 IP 都会单独处理；达到额度上限的剩余 IP 将不会处理。</p>
+          </div>
+          <div class="modal-footer">
+            <button id="bulk-confirm-cancel" class="btn btn-secondary" type="button" data-i18n="cancel">取消</button>
+            <button id="bulk-confirm-ok" class="btn btn-danger" type="button" data-i18n="confirm">确认</button>
           </div>
         </div>
       </div>
