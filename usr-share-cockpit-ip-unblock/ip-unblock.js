@@ -191,7 +191,7 @@
     /* =================================================================
      *  Search / filter
      * ================================================================= */
-    function applyFilter() {
+    function applyFilter(resetPage) {
         var input = getEl("search-input");
         var query = input ? input.value.trim().toLowerCase() : "";
         var source = selectedSource();
@@ -203,7 +203,7 @@
                     (!query || r.ip.toLowerCase().indexOf(query) !== -1);
             });
         }
-        currentPage = 1;
+        if (resetPage !== false) currentPage = 1;
     }
 
     function populateSourceFilter() {
@@ -225,8 +225,8 @@
     /* =================================================================
      *  Load
      * ================================================================= */
-    function loadAll() {
-        hideMessage();
+    function loadAll(keepMessage) {
+        if (!keepMessage) hideMessage();
         var loadingEl = getEl("loading-indicator");
         if (loadingEl) loadingEl.style.display = "block";
         ["empty-state", "no-match-state", "rules-table-wrap", "pagination"].forEach(function (id) {
@@ -237,7 +237,7 @@
         // Load list and recent in parallel
         var p1 = spawnHelper(["list"]).then(function (raw) {
             currentData = JSON.parse(raw);
-            applyFilter();
+            applyFilter(true);
         });
         var p2 = spawnHelper(["recent"]).then(function (raw) {
             recentData = JSON.parse(raw);
@@ -261,7 +261,7 @@
         var loadingEl = getEl("loading-indicator");
         if (loadingEl) loadingEl.style.display = "none";
         populateSourceFilter();
-        applyFilter();
+        applyFilter(false);
         renderQuota();
         renderTable();
         renderPagination();
@@ -567,7 +567,7 @@
                 }
                 pendingUnblockIp = null;
                 pendingUnblockSource = "all";
-                loadAll();
+                loadAll(true);
             })
             .catch(function (err) {
                 pendingUnblockIp = null;
@@ -635,10 +635,10 @@
         });
 
         el = getEl("search-input");
-        if (el) el.addEventListener("input", function () { applyFilter(); renderAll(); });
+        if (el) el.addEventListener("input", function () { applyFilter(true); renderAll(); });
 
         el = getEl("source-filter");
-        if (el) el.addEventListener("change", function () { applyFilter(); renderAll(); });
+        if (el) el.addEventListener("change", function () { applyFilter(true); renderAll(); });
 
         el = getEl("btn-prev");
         if (el) el.addEventListener("click", function () { if (currentPage > 1) { currentPage--; renderAll(); } });
