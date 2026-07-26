@@ -271,19 +271,9 @@ class FirewalldAdapter:
 
     @staticmethod
     def _has_terminal_block_action(fields):
-        for index, field in enumerate(fields):
-            if field not in {"drop", "reject"}:
-                continue
-            trailing = fields[index + 1:]
-            if field == "reject" and trailing and trailing[0].startswith("type="):
-                trailing = trailing[1:]
-            if not trailing:
-                return True
-            if trailing[0] != "limit":
-                continue
-            if all(option.startswith(("value=", "burst=")) for option in trailing[1:]):
-                return True
-        return False
+        if fields[-1] in {"drop", "reject"}:
+            return True
+        return len(fields) >= 2 and fields[-2] == "reject" and fields[-1].startswith("type=")
 
     def _rules(self):
         rules = []

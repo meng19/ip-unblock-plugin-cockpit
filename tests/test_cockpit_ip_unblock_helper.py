@@ -242,6 +242,13 @@ class AdapterIntegrationTests(TestCase):
 
 
 class FirewalldRuleParsingTests(TestCase):
+    def test_excludes_block_actions_followed_by_malformed_limiter_tokens(self):
+        """A bare limiter after an action is malformed and must not be removable."""
+        helper = load_helper()
+        self.assertIsNone(helper.FirewalldAdapter._parse_rule(
+            'rule source address="203.0.113.7" drop limit'
+        ))
+
     def test_excludes_non_terminal_action_words_in_log_prefix_or_quoted_fields(self):
         """A log prefix or quoted option mentioning drop/reject is not a blocking action."""
         helper = load_helper()
