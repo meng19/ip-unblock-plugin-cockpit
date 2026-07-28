@@ -87,7 +87,7 @@
           <table id="rules-table" class="table">
             <thead>
               <tr>
-                <th id="bulk-select-column" style="display: none;"><input id="select-all-blocked" type="checkbox" aria-label="Select all filtered IP addresses" /></th>
+                <th id="bulk-select-column" style="display: none;"><input id="select-all-blocked" type="checkbox" aria-label="Select all IP addresses on this page" /></th>
                 <th data-i18n="ruleNum">序号</th>
                 <th data-i18n="sourceIP">来源 IP</th>
                 <th data-i18n="blockSource">封禁来源</th>
@@ -104,9 +104,21 @@
           <div id="pagination" class="pagination" style="display: none;">
             <span id="pagination-info" class="pagination-info"></span>
             <div class="pagination-buttons">
+              <label class="page-size-label" for="page-size">
+                <span data-i18n="pageSize">每页</span>
+                <select id="page-size" class="page-size-select" aria-label="每页条数">
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+                <span data-i18n="pageSizeUnit">条/页</span>
+              </label>
+              <button id="btn-first" class="btn btn-sm" type="button" data-i18n="firstPage">第一页</button>
               <button id="btn-prev" class="btn btn-sm" type="button" data-i18n="prevPage">上一页</button>
               <span id="page-info" class="page-info"></span>
               <button id="btn-next" class="btn btn-sm" type="button" data-i18n="nextPage">下一页</button>
+              <button id="btn-last" class="btn btn-sm" type="button" data-i18n="lastPage">最后一页</button>
             </div>
           </div>
         </div>

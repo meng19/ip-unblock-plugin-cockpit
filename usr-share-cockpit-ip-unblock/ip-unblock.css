@@ -387,6 +387,24 @@ code {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.page-size-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #6a6e73;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.page-size-select {
+  padding: 3px 8px;
+  border: 1px solid #d2d2d2;
+  border-radius: 4px;
+  background: #fff;
+  color: #151515;
+  font-size: 0.85rem;
 }
 .page-info {
   font-size: 0.85rem;
@@ -529,6 +547,7 @@ code {
   .empty-state h3 { color: #e0e0e0; }
   .search-input { background: #333; color: #e0e0e0; border-color: #555; }
   .source-filter { background: #333; color: #e0e0e0; border-color: #555; }
+  .page-size-select { background: #333; color: #e0e0e0; border-color: #555; }
   .search-input:focus { border-color: #4a9eff; box-shadow: 0 0 0 2px rgba(74,158,255,0.2); }
   .search-input::placeholder { color: #777; }
   .page-info:hover { background: #333; border-color: #555; }

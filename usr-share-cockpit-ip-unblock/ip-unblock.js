@@ -4,7 +4,8 @@
 (function () {
     "use strict";
 
-    var PAGE_SIZE = 15;
+    var DEFAULT_PAGE_SIZE = 10;
+    var PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
     var HELPER = "/usr/local/bin/cockpit-ip-unblock-helper";
 
     /* =================================================================
@@ -61,8 +62,12 @@
             msgUnblockFailed: "解封失败：",
             msgSudoFailed: "权限不足，请检查 sudo 配置。",
             showingAll: "共 {total} 条，显示第 {from} - {to} 条",
+            firstPage: "第一页",
             prevPage: "上一页",
             nextPage: "下一页",
+            lastPage: "最后一页",
+            pageSize: "每页",
+            pageSizeUnit: "条/页",
             jumpTo: "跳转到第",
             jumpGo: "页",
             goBtn: "跳转",
@@ -121,8 +126,12 @@
             msgUnblockFailed: "Unblock failed: ",
             msgSudoFailed: "Permission denied, check sudo configuration.",
             showingAll: "{total} total, showing {from} - {to}",
+            firstPage: "First",
             prevPage: "Previous",
             nextPage: "Next",
+            lastPage: "Last",
+            pageSize: "Rows",
+            pageSizeUnit: "rows/page",
             jumpTo: "Go to page",
             jumpGo: "",
             goBtn: "Go",
@@ -153,6 +162,7 @@
     var recentData = null;
     var filtered = [];
     var currentPage = 1;
+    var pageSize = DEFAULT_PAGE_SIZE;
     var pendingUnblockIp = null;
     var pendingUnblockSource = "all";
     var selectedBulkIps = {};
@@ -177,6 +187,23 @@
 
     function selectedBulkIpList() {
         return Object.keys(selectedBulkIps);
+    }
+
+    function pageCount() {
+        return Math.max(1, Math.ceil(filtered.length / pageSize));
+    }
+
+    function currentPageRules() {
+        var totalPages = pageCount();
+        if (currentPage > totalPages) currentPage = totalPages;
+        var start = (currentPage - 1) * pageSize;
+        return filtered.slice(start, start + pageSize);
+    }
+
+    function currentPageIps() {
+        var ips = {};
+        currentPageRules().forEach(function (rule) { ips[rule.ip] = true; });
+        return Object.keys(ips);
     }
 
     function clearBulkSelection() {
@@ -333,6 +360,7 @@
         var selectColumn = getEl("bulk-select-column");
         var bulkButton = getEl("bulk-unblock-btn");
         var canBulk = bulkSelectionEnabled();
+        var currentPageIpList = currentPageIps();
 
         if (selectColumn) selectColumn.style.display = canBulk ? "" : "none";
         if (bulkButton) {
@@ -342,13 +370,10 @@
             bulkButton.textContent = t("bulkUnblockBtn", { n: selectedCount });
         }
         if (selectAll) {
-            var filteredIps = {};
-            filtered.forEach(function (rule) { filteredIps[rule.ip] = true; });
-            var filteredList = Object.keys(filteredIps);
-            var selectedFiltered = filteredList.filter(function (ip) { return selectedBulkIps[ip]; }).length;
-            selectAll.checked = filteredList.length > 0 && selectedFiltered === filteredList.length;
-            selectAll.indeterminate = selectedFiltered > 0 && selectedFiltered < filteredList.length;
-            selectAll.disabled = !canBulk || filteredList.length === 0;
+            var selectedOnPage = currentPageIpList.filter(function (ip) { return selectedBulkIps[ip]; }).length;
+            selectAll.checked = currentPageIpList.length > 0 && selectedOnPage === currentPageIpList.length;
+            selectAll.indeterminate = selectedOnPage > 0 && selectedOnPage < currentPageIpList.length;
+            selectAll.disabled = !canBulk || currentPageIpList.length === 0;
         }
 
         if (searchBox) searchBox.style.display = "flex";
@@ -372,10 +397,10 @@
         if (noMatchEl) noMatchEl.style.display = "none";
         if (tableEl) tableEl.style.display = "";
 
-        var totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+        var totalPages = pageCount();
         if (currentPage > totalPages) currentPage = totalPages;
-        var start = (currentPage - 1) * PAGE_SIZE;
-        var page = filtered.slice(start, start + PAGE_SIZE);
+        var start = (currentPage - 1) * pageSize;
+        var page = currentPageRules();
 
         if (!tbody) return;
         tbody.innerHTML = "";
@@ -397,6 +422,12 @@
                     renderAll();
                 });
                 tdSelect.appendChild(checkbox);
+                tdSelect.addEventListener("click", function (e) {
+                    if (e.target !== checkbox) {
+                        checkbox.checked = !checkbox.checked;
+                        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+                    }
+                });
                 tr.appendChild(tdSelect);
             }
             ["num", "ip"].forEach(function (f) {
@@ -453,25 +484,31 @@
         var infoEl = getEl("pagination-info");
         if (!infoEl || filtered.length === 0) return;
         var total = filtered.length;
-        var start = (currentPage - 1) * PAGE_SIZE + 1;
-        var end = Math.min(start + PAGE_SIZE - 1, total);
+        var start = (currentPage - 1) * pageSize + 1;
+        var end = Math.min(start + pageSize - 1, total);
         infoEl.textContent = t("showingAll", { total: total, from: start, to: end });
     }
 
     function renderPagination() {
         var pg = getEl("pagination");
         if (!pg) return;
-        if (filtered.length <= PAGE_SIZE) { pg.style.display = "none"; return; }
+        if (filtered.length === 0) { pg.style.display = "none"; return; }
         pg.style.display = "flex";
 
-        var tp = Math.ceil(filtered.length / PAGE_SIZE);
+        var tp = pageCount();
+        var firstBtn = getEl("btn-first");
         var prevBtn = getEl("btn-prev");
         var nextBtn = getEl("btn-next");
+        var lastBtn = getEl("btn-last");
         var pageInfo = getEl("page-info");
+        var pageSizeSelect = getEl("page-size");
 
+        if (firstBtn) firstBtn.disabled = (currentPage <= 1);
         if (prevBtn) prevBtn.disabled = (currentPage <= 1);
         if (nextBtn) nextBtn.disabled = (currentPage >= tp);
+        if (lastBtn) lastBtn.disabled = (currentPage >= tp);
         if (pageInfo) pageInfo.textContent = currentPage + " / " + tp;
+        if (pageSizeSelect) pageSizeSelect.value = String(pageSize);
         updatePaginationText();
     }
 
@@ -484,7 +521,7 @@
         pageInfo.title = "点击跳转页码";
 
         pageInfo.addEventListener("click", function () {
-            var tp = Math.ceil(filtered.length / PAGE_SIZE);
+            var tp = pageCount();
             if (!tp) return;
 
             var input = document.createElement("input");
@@ -770,9 +807,7 @@
         el = getEl("select-all-blocked");
         if (el) el.addEventListener("change", function () {
             if (!bulkSelectionEnabled()) return;
-            var ips = {};
-            filtered.forEach(function (rule) { ips[rule.ip] = true; });
-            Object.keys(ips).forEach(function (ip) {
+            currentPageIps().forEach(function (ip) {
                 if (el.checked) selectedBulkIps[ip] = true;
                 else delete selectedBulkIps[ip];
             });
@@ -785,13 +820,32 @@
         el = getEl("source-filter");
         if (el) el.addEventListener("change", function () { clearBulkSelection(); applyFilter(true); renderAll(); });
 
+        el = getEl("btn-first");
+        if (el) el.addEventListener("click", function () { if (currentPage > 1) { currentPage = 1; renderAll(); } });
+
         el = getEl("btn-prev");
         if (el) el.addEventListener("click", function () { if (currentPage > 1) { currentPage--; renderAll(); } });
 
         el = getEl("btn-next");
         if (el) el.addEventListener("click", function () {
-            var tp = Math.ceil(filtered.length / PAGE_SIZE);
+            var tp = pageCount();
             if (currentPage < tp) { currentPage++; renderAll(); }
+        });
+
+        el = getEl("btn-last");
+        if (el) el.addEventListener("click", function () {
+            var tp = pageCount();
+            if (currentPage < tp) { currentPage = tp; renderAll(); }
+        });
+
+        el = getEl("page-size");
+        if (el) el.addEventListener("change", function () {
+            var n = parseInt(el.value, 10);
+            if (PAGE_SIZE_OPTIONS.indexOf(n) === -1) n = DEFAULT_PAGE_SIZE;
+            pageSize = n;
+            currentPage = 1;
+            try { localStorage.setItem("ip-unblock:pageSize", String(pageSize)); } catch (e) {}
+            renderAll();
         });
 
         // Page jump: click page-info to edit
@@ -809,6 +863,10 @@
         try {
             var saved = localStorage.getItem("ip-unblock:lang");
             if (saved === "en" || saved === "zh") curLang = saved;
+        } catch (e) {}
+        try {
+            var savedPageSize = parseInt(localStorage.getItem("ip-unblock:pageSize"), 10);
+            if (PAGE_SIZE_OPTIONS.indexOf(savedPageSize) !== -1) pageSize = savedPageSize;
         } catch (e) {}
 
         bindEvents();
