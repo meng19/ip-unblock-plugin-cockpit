@@ -532,6 +532,52 @@ def _location_text(*parts):
     return " · ".join(seen)
 
 
+def _simplify_chinese(text):
+    """Normalize common traditional Chinese location words returned by geo APIs."""
+    replacements = {
+        "聖": "圣",
+        "舊": "旧",
+        "華": "华",
+        "國": "国",
+        "亞": "亚",
+        "歐": "欧",
+        "蘭": "兰",
+        "爾": "尔",
+        "紐": "纽",
+        "約": "约",
+        "倫": "伦",
+        "頓": "顿",
+        "維": "维",
+        "納": "纳",
+        "羅": "罗",
+        "馬": "马",
+        "漢": "汉",
+        "濱": "滨",
+        "薩": "萨",
+        "魯": "鲁",
+        "賓": "宾",
+        "縣": "县",
+        "區": "区",
+        "臺": "台",
+        "灣": "湾",
+    }
+    return "".join(replacements.get(char, char) for char in text)
+
+
+def _location_payload(ip, data, source, lang):
+    if source == "ipwho" and data.get("success") is not False:
+        text = _location_text(data.get("country"), data.get("region"), data.get("city"))
+    elif source == "ipapi" and data.get("status") == "success":
+        text = _location_text(data.get("country"), data.get("regionName"), data.get("city"))
+    else:
+        text = ""
+    if not text:
+        return None
+    if lang == "zh":
+        text = _simplify_chinese(text)
+    return {"status": "success", "ip": ip, "text": text}
+
+
 def locate_ip(ip, lang="zh"):
     """Return a best-effort public IP location payload."""
     address = ip_address(ip)
@@ -539,23 +585,20 @@ def locate_ip(ip, lang="zh"):
         return {"status": "reserved", "ip": ip}
 
     locale = "zh-CN" if lang == "zh" else "en"
-    try:
-        data = _fetch_json(f"https://ipwho.is/{ip}?lang={locale}")
-        if data.get("success") is not False:
-            text = _location_text(data.get("country"), data.get("region"), data.get("city"))
-            if text:
-                return {"status": "success", "ip": ip, "text": text}
-    except Exception:
-        pass
-
-    try:
-        data = _fetch_json(f"http://ip-api.com/json/{ip}?lang={locale}")
-        if data.get("status") == "success":
-            text = _location_text(data.get("country"), data.get("regionName"), data.get("city"))
-            if text:
-                return {"status": "success", "ip": ip, "text": text}
-    except Exception:
-        pass
+    providers = (
+        ("ipapi", f"http://ip-api.com/json/{ip}?lang={locale}"),
+        ("ipwho", f"https://ipwho.is/{ip}?lang={locale}"),
+    ) if lang == "zh" else (
+        ("ipwho", f"https://ipwho.is/{ip}?lang={locale}"),
+        ("ipapi", f"http://ip-api.com/json/{ip}?lang={locale}"),
+    )
+    for source, url in providers:
+        try:
+            payload = _location_payload(ip, _fetch_json(url), source, lang)
+            if payload:
+                return payload
+        except Exception:
+            pass
 
     return {"status": "unknown", "ip": ip}
 

@@ -385,11 +385,12 @@ class MultiSourceCommandTests(TestCase):
             fetch.assert_not_called()
 
         with mock.patch.object(helper, "_fetch_json", return_value={
-            "success": True, "country": "美国", "region": "加利福尼亚州", "city": "圣何塞",
-        }):
+            "status": "success", "country": "美国", "regionName": "加利福尼亚州", "city": "聖荷西",
+        }) as fetch:
             self.assertEqual(helper.locate_ip("8.8.8.8", "zh"), {
-                "status": "success", "ip": "8.8.8.8", "text": "美国 · 加利福尼亚州 · 圣何塞",
+                "status": "success", "ip": "8.8.8.8", "text": "美国 · 加利福尼亚州 · 圣荷西",
             })
+            self.assertIn("ip-api.com", fetch.call_args.args[0])
 
     def test_parse_cli_rejects_force_quota_bypass(self):
         """A caller allowed to run the helper must not opt itself out of quota accounting."""
