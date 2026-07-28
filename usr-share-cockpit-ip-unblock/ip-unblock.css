@@ -309,6 +309,13 @@ code {
 .source-fail2ban { background: #f3e8ff; color: #5b21b6; border: 1px solid #d8b4fe; }
 .source-firewalld { background: #e7f5ec; color: #176b3a; border: 1px solid #a8d5b8; }
 .source-ufw { background: #fff0e1; color: #9a4c00; border: 1px solid #f6c58f; }
+.ip-location-cell {
+  color: #3c4043;
+  min-width: 140px;
+}
+.ip-location-cell.muted {
+  color: #8a8d90;
+}
 
 /* ── Empty state ────────────────────────────────────────────────── */
 .empty-state {
@@ -531,6 +538,8 @@ code {
   .source-fail2ban { background: #30204a; color: #d8b4fe; border-color: #60478c; }
   .source-firewalld { background: #18372a; color: #9ce0b5; border-color: #356f4f; }
   .source-ufw { background: #422910; color: #fdba74; border-color: #7e5126; }
+  .ip-location-cell { color: #d8d8d8; }
+  .ip-location-cell.muted { color: #8a8d90; }
   .table input[type="checkbox"] { accent-color: #4a9eff; }
   .btn { background: #333; color: #e0e0e0; border-color: #555; }
   .btn:hover { background: #444; }

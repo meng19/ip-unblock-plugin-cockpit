@@ -30,7 +30,7 @@
             blockSource: "封禁来源",
             allSources: "全部可用来源",
             ruleDetail: "规则详情",
-            target: "动作",
+            target: "位置信息",
             action: "操作",
             confirmTitle: "确认解封",
             confirmMsg1: "确定要解封 IP 地址",
@@ -58,6 +58,9 @@
             sourceNotFound: "未找到匹配项",
             sourceUnavailable: "不可用",
             sourceFailed: "失败",
+            locationLoading: "查询中...",
+            locationUnknown: "未知位置",
+            locationReserved: "本地/保留地址",
             msgLoadFailed: "加载封禁 IP 列表失败：",
             msgUnblockFailed: "解封失败：",
             msgSudoFailed: "权限不足，请检查 sudo 配置。",
@@ -94,7 +97,7 @@
             blockSource: "Block source",
             allSources: "All available sources",
             ruleDetail: "Rule detail",
-            target: "Target",
+            target: "Location",
             action: "Action",
             confirmTitle: "Confirm Unblock",
             confirmMsg1: "Are you sure you want to unblock IP address",
@@ -122,6 +125,9 @@
             sourceNotFound: "not found",
             sourceUnavailable: "unavailable",
             sourceFailed: "failed",
+            locationLoading: "Looking up...",
+            locationUnknown: "Unknown location",
+            locationReserved: "Local/reserved",
             msgLoadFailed: "Failed to load blocked IPs: ",
             msgUnblockFailed: "Unblock failed: ",
             msgSudoFailed: "Permission denied, check sudo configuration.",
@@ -166,6 +172,7 @@
     var pendingUnblockIp = null;
     var pendingUnblockSource = "all";
     var selectedBulkIps = {};
+    var locationCache = {};
 
     /* =================================================================
      *  Helpers
@@ -218,6 +225,92 @@
         Object.keys(selectedBulkIps).forEach(function (ip) {
             if (!available[ip]) delete selectedBulkIps[ip];
         });
+    }
+
+    function ipv4Parts(ip) {
+        var parts = String(ip || "").split(".");
+        if (parts.length !== 4) return null;
+        var nums = [];
+        for (var i = 0; i < parts.length; i++) {
+            if (!/^\d+$/.test(parts[i])) return null;
+            var n = parseInt(parts[i], 10);
+            if (n < 0 || n > 255) return null;
+            nums.push(n);
+        }
+        return nums;
+    }
+
+    function isReservedIp(ip) {
+        var v4 = ipv4Parts(ip);
+        if (v4) {
+            return v4[0] === 0 ||
+                v4[0] === 10 ||
+                v4[0] === 127 ||
+                (v4[0] === 169 && v4[1] === 254) ||
+                (v4[0] === 172 && v4[1] >= 16 && v4[1] <= 31) ||
+                (v4[0] === 192 && v4[1] === 168) ||
+                (v4[0] === 192 && v4[1] === 0 && v4[2] === 2) ||
+                (v4[0] === 198 && v4[1] === 51 && v4[2] === 100) ||
+                (v4[0] === 203 && v4[1] === 0 && v4[2] === 113) ||
+                v4[0] >= 224;
+        }
+
+        var v6 = String(ip || "").toLowerCase();
+        return v6 === "::" ||
+            v6 === "::1" ||
+            v6.indexOf("fe80:") === 0 ||
+            v6.indexOf("fc") === 0 ||
+            v6.indexOf("fd") === 0 ||
+            v6.indexOf("2001:db8:") === 0;
+    }
+
+    function formatLocation(info) {
+        var parts = [info.country, info.region, info.city].filter(function (part, index, arr) {
+            return part && arr.indexOf(part) === index;
+        });
+        return parts.length ? parts.join(" · ") : t("locationUnknown");
+    }
+
+    function setLocationCells(ip, text) {
+        var cells = document.querySelectorAll("[data-location-ip]");
+        Array.prototype.forEach.call(cells, function (cell) {
+            if (cell.getAttribute("data-location-ip") !== ip) return;
+            cell.textContent = text;
+            cell.classList.toggle("muted", text === t("locationLoading") || text === t("locationUnknown"));
+        });
+    }
+
+    function ensureIpLocation(ip) {
+        if (locationCache[ip]) return;
+        if (isReservedIp(ip)) {
+            locationCache[ip] = { text: t("locationReserved") };
+            return;
+        }
+        locationCache[ip] = { text: t("locationLoading"), loading: true };
+
+        fetch("https://ipwho.is/" + encodeURIComponent(ip) + "?lang=" + (curLang === "zh" ? "zh-CN" : "en"))
+            .then(function (response) {
+                if (!response.ok) throw new Error(response.statusText);
+                return response.json();
+            })
+            .then(function (data) {
+                var text = data && data.success !== false ? formatLocation(data) : t("locationUnknown");
+                locationCache[ip] = { text: text };
+                setLocationCells(ip, text);
+            })
+            .catch(function () {
+                locationCache[ip] = { text: t("locationUnknown") };
+                setLocationCells(ip, t("locationUnknown"));
+            });
+    }
+
+    function renderLocationCell(td, ip) {
+        ensureIpLocation(ip);
+        var cached = locationCache[ip];
+        td.className = "ip-location-cell";
+        td.setAttribute("data-location-ip", ip);
+        td.textContent = cached ? cached.text : t("locationLoading");
+        if (!cached || cached.loading || cached.text === t("locationUnknown")) td.classList.add("muted");
     }
 
     /* =================================================================
@@ -453,12 +546,7 @@
             tr.appendChild(tdRule);
 
             var tdT = document.createElement("td");
-            var badge = document.createElement("span");
-            badge.className = "badge";
-            if (rule.target === "DROP") badge.classList.add("badge-drop");
-            else if (rule.target === "REJECT") badge.classList.add("badge-reject");
-            badge.textContent = rule.target || rule.scope || "—";
-            tdT.appendChild(badge);
+            renderLocationCell(tdT, rule.ip);
             tr.appendChild(tdT);
 
             var tdA = document.createElement("td");
@@ -756,6 +844,7 @@
 
     function switchLang(lang) {
         curLang = lang;
+        locationCache = {};
         try { localStorage.setItem("ip-unblock:lang", lang); } catch (e) {}
         applyI18n();
         renderAll();
