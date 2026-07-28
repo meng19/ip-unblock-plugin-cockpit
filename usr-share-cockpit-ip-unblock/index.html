@@ -87,7 +87,12 @@
           <table id="rules-table" class="table">
             <thead>
               <tr>
-                <th id="bulk-select-column" style="display: none;"><input id="select-all-blocked" type="checkbox" aria-label="Select all IP addresses on this page" /></th>
+                <th id="bulk-select-column" style="display: none;">
+                  <button id="select-all-blocked" class="select-all-button" type="button"
+                          aria-label="Select all IP addresses on this page" aria-pressed="false">
+                    <span class="select-box" aria-hidden="true"></span>
+                  </button>
+                </th>
                 <th data-i18n="ruleNum">序号</th>
                 <th data-i18n="sourceIP">来源 IP</th>
                 <th data-i18n="blockSource">封禁来源</th>
@@ -133,17 +138,19 @@
           <div id="no-recent" class="empty-state" style="display: none;">
             <p data-i18n="noRecent">暂无解封记录</p>
           </div>
-          <table id="recent-table" class="table">
-            <thead>
-              <tr>
-                <th data-i18n="recentTime">时间</th>
-                <th data-i18n="recentIp">IP 地址</th>
-                <th data-i18n="blockSource">封禁来源</th>
-                <th data-i18n="target">位置信息</th>
-              </tr>
-            </thead>
-            <tbody id="recent-body"></tbody>
-          </table>
+          <div id="recent-table-wrap" class="table-wrap">
+            <table id="recent-table" class="table">
+              <thead>
+                <tr>
+                  <th data-i18n="recentTime">时间</th>
+                  <th data-i18n="recentIp">IP 地址</th>
+                  <th data-i18n="blockSource">封禁来源</th>
+                  <th data-i18n="target">位置信息</th>
+                </tr>
+              </thead>
+              <tbody id="recent-body"></tbody>
+            </table>
+          </div>
         </div>
       </div>
 

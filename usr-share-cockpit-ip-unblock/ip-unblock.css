@@ -251,7 +251,10 @@ code {
   width: 100%;
   border-collapse: collapse;
 }
-.table-wrap { overflow-x: auto; }
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .table th,
 .table td {
   text-align: left;
@@ -276,12 +279,78 @@ code {
   width: 1%;
   white-space: nowrap;
 }
+#bulk-select-column {
+  padding: 4px 8px;
+}
+.select-all-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.select-all-button:hover,
+.select-all-button:focus-visible {
+  background: #f0f0f0;
+  border-color: #b8bbbe;
+  outline: none;
+}
+.select-all-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.select-box {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #6a6e73;
+  border-radius: 3px;
+  background: #fff;
+}
+.select-all-button.is-checked .select-box,
+.select-all-button.is-mixed .select-box {
+  border-color: #0066cc;
+  background: #0066cc;
+}
+.select-all-button.is-checked .select-box::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.select-all-button.is-mixed .select-box::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 7px;
+  height: 2px;
+  background: #fff;
+}
+.bulk-select-cell {
+  cursor: pointer;
+  text-align: center;
+  touch-action: manipulation;
+}
 .table input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   margin: 0;
   vertical-align: middle;
   accent-color: #0066cc;
+  cursor: pointer;
+  touch-action: manipulation;
 }
 
 /* ── Badges ─────────────────────────────────────────────────────── */
@@ -320,6 +389,13 @@ code {
 }
 .ip-location-cell.muted {
   color: #8a8d90;
+}
+#recent-table {
+  min-width: 680px;
+}
+#recent-table th,
+#recent-table td {
+  white-space: nowrap;
 }
 
 /* ── Empty state ────────────────────────────────────────────────── */
@@ -516,6 +592,7 @@ code {
   .search-input { width: 100%; }
   .search-input:focus { width: 100%; }
   .pagination { flex-direction: column; align-items: flex-start; }
+  .pagination-buttons { justify-content: flex-start; }
   .quota-bar { flex-direction: column; align-items: flex-start; gap: 8px; }
   .quota-divider { width: 100%; height: 1px; }
 }
@@ -545,6 +622,11 @@ code {
   .source-ufw { background: #422910; color: #fdba74; border-color: #7e5126; }
   .ip-location-cell { color: #d8d8d8; }
   .ip-location-cell.muted { color: #8a8d90; }
+  .select-all-button:hover,
+  .select-all-button:focus-visible { background: #333; border-color: #555; }
+  .select-box { background: #252525; border-color: #a0a0a0; }
+  .select-all-button.is-checked .select-box,
+  .select-all-button.is-mixed .select-box { background: #4a9eff; border-color: #4a9eff; }
   .table input[type="checkbox"] { accent-color: #4a9eff; }
   .btn { background: #333; color: #e0e0e0; border-color: #555; }
   .btn:hover { background: #444; }

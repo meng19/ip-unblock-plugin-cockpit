@@ -252,10 +252,12 @@
 
     function hideRecentDuringLoad() {
         var section = getEl("recent-section");
+        var wrap = getEl("recent-table-wrap");
         var table = getEl("recent-table");
         var body = getEl("recent-body");
         var empty = getEl("no-recent");
         if (section) section.style.display = "none";
+        if (wrap) wrap.style.display = "none";
         if (table) table.style.display = "none";
         if (body) {
             body.innerHTML = "";
@@ -519,9 +521,11 @@
         }
         if (selectAll) {
             var selectedOnPage = selectedCurrentPageIpCount();
-            selectAll.checked = currentPageIpList.length > 0 && selectedOnPage === currentPageIpList.length;
-            selectAll.indeterminate = selectedOnPage > 0 && selectedOnPage < currentPageIpList.length;
             selectAll.disabled = !canBulk || currentPageIpList.length === 0;
+            selectAll.classList.toggle("is-checked", currentPageIpList.length > 0 && selectedOnPage === currentPageIpList.length);
+            selectAll.classList.toggle("is-mixed", selectedOnPage > 0 && selectedOnPage < currentPageIpList.length);
+            selectAll.setAttribute("aria-pressed",
+                currentPageIpList.length > 0 && selectedOnPage === currentPageIpList.length ? "true" : "false");
         }
 
         if (searchBox) searchBox.style.display = "flex";
@@ -560,6 +564,7 @@
             var tr = document.createElement("tr");
             if (canBulk) {
                 var tdSelect = document.createElement("td");
+                tdSelect.className = "bulk-select-cell";
                 var checkbox = document.createElement("input");
                 checkbox.type = "checkbox";
                 checkbox.checked = !!selectedBulkIps[rule.ip];
@@ -711,6 +716,7 @@
      * ================================================================= */
     function renderRecent() {
         var section = getEl("recent-section");
+        var wrap = getEl("recent-table-wrap");
         var table = getEl("recent-table");
         var body = getEl("recent-body");
         var empty = getEl("no-recent");
@@ -724,6 +730,7 @@
 
         if (history.length === 0) {
             section.style.display = "";
+            if (wrap) wrap.style.display = "none";
             if (table) table.style.display = "none";
             body.innerHTML = "";
             body.style.display = "none";
@@ -732,6 +739,7 @@
         }
 
         section.style.display = "";
+        if (wrap) wrap.style.display = "";
         if (table) table.style.display = "";
         body.style.display = "";
         if (empty) empty.style.display = "none";
@@ -740,17 +748,21 @@
         history.slice().reverse().forEach(function (rec) {
             var tr = document.createElement("tr");
             var tdTime = document.createElement("td");
+            tdTime.setAttribute("data-label", t("recentTime"));
             tdTime.textContent = rec.time;
             tr.appendChild(tdTime);
             var tdIp = document.createElement("td");
+            tdIp.setAttribute("data-label", t("recentIp"));
             var code = document.createElement("code");
             code.textContent = rec.ip;
             tdIp.appendChild(code);
             tr.appendChild(tdIp);
             var tdSource = document.createElement("td");
+            tdSource.setAttribute("data-label", t("blockSource"));
             appendSourceBadges(tdSource, rec.source);
             tr.appendChild(tdSource);
             var tdLocation = document.createElement("td");
+            tdLocation.setAttribute("data-label", t("target"));
             renderLocationCell(tdLocation, rec.ip);
             tr.appendChild(tdLocation);
             body.appendChild(tr);
@@ -956,13 +968,15 @@
         if (el) el.addEventListener("click", function (e) { if (e.target === el) closeBulkConfirm(); });
 
         el = getEl("select-all-blocked");
-        if (el) el.addEventListener("change", function () {
-            setCurrentPageBulkSelection(el.checked);
+        if (el) el.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleCurrentPageBulkSelection();
         });
 
         el = getEl("bulk-select-column");
         if (el) el.addEventListener("click", function (e) {
-            if (e.target && e.target.id === "select-all-blocked") return;
+            if (e.target && e.target.closest && e.target.closest("#select-all-blocked")) return;
             toggleCurrentPageBulkSelection();
         });
 

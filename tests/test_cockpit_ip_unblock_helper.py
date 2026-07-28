@@ -576,6 +576,8 @@ class FrontendContractTests(TestCase):
         self.assertIn('data-i18n="recentIp"', html)
         self.assertIn('data-i18n="blockSource"', html)
         self.assertIn('data-i18n="target"', html)
+        self.assertIn('id="recent-table-wrap"', html)
+        self.assertIn('class="table-wrap"', html)
         self.assertIn('body.innerHTML = ""', script)
         self.assertIn('appendSourceBadges(tdSource, rec.source)', script)
         self.assertIn('renderLocationCell(tdLocation, rec.ip)', script)
@@ -591,7 +593,7 @@ class FrontendContractTests(TestCase):
         self.assertIn('currentData.can_bulk_unblock', script)
         self.assertIn('selectedBulkIps', script)
         self.assertIn('toggleCurrentPageBulkSelection()', script)
-        self.assertIn('id === "select-all-blocked"', script)
+        self.assertIn('closest("#select-all-blocked")', script)
 
     def test_bulk_ui_calls_source_aware_helper_and_reports_unprocessed_ips(self):
         """Batch requests must preserve the selected source and surface backend partial processing."""
