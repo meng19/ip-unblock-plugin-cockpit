@@ -24,6 +24,7 @@ code {
   border-radius: 3px;
   border: 1px solid #ddd;
 }
+.muted { color: #8a8d90; }
 
 /* ── Layout ─────────────────────────────────────────────────────── */
 #app {
@@ -304,7 +305,11 @@ code {
   color: #8a6d00;
   border: 1px solid #f9e07d;
 }
-.source-badge { text-transform: none; }
+.source-badge {
+  margin-right: 6px;
+  text-transform: none;
+}
+.source-badge:last-child { margin-right: 0; }
 .source-iptables { background: #e8f1fa; color: #004b95; border: 1px solid #9ec5e8; }
 .source-fail2ban { background: #f3e8ff; color: #5b21b6; border: 1px solid #d8b4fe; }
 .source-firewalld { background: #e7f5ec; color: #176b3a; border: 1px solid #a8d5b8; }

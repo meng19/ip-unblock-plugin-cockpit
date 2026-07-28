@@ -75,6 +75,8 @@
             jumpGo: "页",
             goBtn: "跳转",
             recentUnblocks: "今日解封记录",
+            recentTime: "时间",
+            recentIp: "IP 地址",
             noRecent: "暂无解封记录",
             switchTo: "English",
             switchLang: "en",
@@ -142,6 +144,8 @@
             jumpGo: "",
             goBtn: "Go",
             recentUnblocks: "Today's Unblock Records",
+            recentTime: "Time",
+            recentIp: "IP Address",
             noRecent: "No unblock records",
             switchTo: "中文",
             switchLang: "zh",
@@ -225,6 +229,20 @@
         Object.keys(selectedBulkIps).forEach(function (ip) {
             if (!available[ip]) delete selectedBulkIps[ip];
         });
+    }
+
+    function hideRecentDuringLoad() {
+        var section = getEl("recent-section");
+        var table = getEl("recent-table");
+        var body = getEl("recent-body");
+        var empty = getEl("no-recent");
+        if (section) section.style.display = "none";
+        if (table) table.style.display = "none";
+        if (body) {
+            body.innerHTML = "";
+            body.style.display = "none";
+        }
+        if (empty) empty.style.display = "none";
     }
 
     function ipv4Parts(ip) {
@@ -313,6 +331,25 @@
         if (!cached || cached.loading || cached.text === t("locationUnknown")) td.classList.add("muted");
     }
 
+    function appendSourceBadges(td, sourceText) {
+        var sources = String(sourceText || "").split(",").map(function (source) {
+            return source.trim();
+        }).filter(Boolean);
+
+        if (!sources.length) {
+            td.textContent = "—";
+            td.className = "muted";
+            return;
+        }
+
+        sources.forEach(function (source) {
+            var badge = document.createElement("span");
+            badge.className = "badge source-badge source-" + source;
+            badge.textContent = source;
+            td.appendChild(badge);
+        });
+    }
+
     /* =================================================================
      *  Messages
      * ================================================================= */
@@ -390,6 +427,7 @@
             var el = getEl(id);
             if (el) el.style.display = "none";
         });
+        hideRecentDuringLoad();
 
         // Load list and recent in parallel
         var p1 = spawnHelper(["list"]).then(function (raw) {
@@ -661,7 +699,7 @@
         var empty = getEl("no-recent");
         if (!section || !body) return;
         if (!currentData || !currentData.show_recent_history) {
-            section.style.display = "none";
+            hideRecentDuringLoad();
             return;
         }
 
@@ -670,6 +708,7 @@
         if (history.length === 0) {
             section.style.display = "";
             if (table) table.style.display = "none";
+            body.innerHTML = "";
             body.style.display = "none";
             if (empty) empty.style.display = "block";
             return;
@@ -691,6 +730,12 @@
             code.textContent = rec.ip;
             tdIp.appendChild(code);
             tr.appendChild(tdIp);
+            var tdSource = document.createElement("td");
+            appendSourceBadges(tdSource, rec.source);
+            tr.appendChild(tdSource);
+            var tdLocation = document.createElement("td");
+            renderLocationCell(tdLocation, rec.ip);
+            tr.appendChild(tdLocation);
             body.appendChild(tr);
         });
     }

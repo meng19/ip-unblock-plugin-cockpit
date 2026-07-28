@@ -314,7 +314,7 @@ class MultiSourceCommandTests(TestCase):
             iptables.unblock.return_value, fail2ban.unblock.return_value, firewalld.unblock.return_value,
         ])
         consume.assert_called_once_with("alice")
-        history.assert_called_once_with("alice", "203.0.113.7")
+        history.assert_called_once_with("alice", "203.0.113.7", "iptables, firewalld")
 
     def test_requested_source_only_invokes_that_source(self):
         """Selecting one source must not touch any other backend."""
@@ -325,11 +325,12 @@ class MultiSourceCommandTests(TestCase):
         })
         with mock.patch.object(helper, "get_adapters", return_value=[iptables, fail2ban]), \
              mock.patch.object(helper, "consume_quota", return_value=(4, 5, False)), \
-             mock.patch.object(helper, "record_history"):
+             mock.patch.object(helper, "record_history") as history:
             payload = helper.unblock_ip("alice", "203.0.113.7", "fail2ban")
         self.assertEqual(payload["result"], "success")
         iptables.unblock.assert_not_called()
         fail2ban.unblock.assert_called_once_with("203.0.113.7")
+        history.assert_called_once_with("alice", "203.0.113.7", "fail2ban")
 
     def test_no_removal_does_not_consume_quota_or_record_history(self):
         """Quota and history advance only after at least one deletion succeeds."""
@@ -539,7 +540,20 @@ class FrontendContractTests(TestCase):
         script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
         self.assertIn('source_results', script)
         self.assertIn('source-badge', script)
-        self.assertIn('badge.textContent =', script)
+        self.assertIn('.textContent =', script)
+
+    def test_recent_table_hides_headers_when_empty_and_shows_source_location_columns(self):
+        """Recent records must not leave table headers behind and should show richer context."""
+        root = Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        script = (root / "ip-unblock.js").read_text(encoding="utf-8")
+        self.assertIn('data-i18n="recentTime"', html)
+        self.assertIn('data-i18n="recentIp"', html)
+        self.assertIn('data-i18n="blockSource"', html)
+        self.assertIn('data-i18n="target"', html)
+        self.assertIn('body.innerHTML = ""', script)
+        self.assertIn('appendSourceBadges(tdSource, rec.source)', script)
+        self.assertIn('renderLocationCell(tdLocation, rec.ip)', script)
 
     def test_bulk_ui_has_authorized_selection_controls_and_confirmation(self):
         """Batch controls must be gated by the list capability and include accessible selection UI."""

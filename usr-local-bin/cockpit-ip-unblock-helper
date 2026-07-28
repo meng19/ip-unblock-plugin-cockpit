@@ -484,7 +484,7 @@ def consume_quota(user):
     return max(0, limit - entry["count"]), limit, False
 
 
-def record_history(user, ip):
+def record_history(user, ip, source=""):
     """Append an unblock record to the user's state."""
     state = load_state()
     today = date.today().isoformat()
@@ -496,6 +496,7 @@ def record_history(user, ip):
     entry["history"].append({
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "ip": ip,
+        "source": source,
     })
     # Keep only today's records
     state[user] = entry
@@ -609,7 +610,12 @@ def unblock_ip(user, ip, source="all"):
     else:
         remaining, limit, _ = get_quota(user)
     if removed:
-        record_history(user, ip)
+        removed_sources = []
+        for item in source_results:
+            item_source = item.get("source", "")
+            if item.get("removed", 0) > 0 and item_source and item_source not in removed_sources:
+                removed_sources.append(item_source)
+        record_history(user, ip, ", ".join(removed_sources))
 
     return {
         "result": result,
