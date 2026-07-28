@@ -366,6 +366,31 @@ class MultiSourceCommandTests(TestCase):
                 parsed = helper.parse_cli(["unblock", "203.0.113.7", "--source", source])
                 self.assertEqual(parsed["source"], source)
 
+    def test_parse_cli_accepts_location_lookup_language(self):
+        """The frontend location lookup uses a strict helper command instead of browser fetch."""
+        helper = load_helper()
+        self.assertEqual(helper.parse_cli(["locate-ip", "8.8.8.8", "zh"]), {
+            "command": "locate-ip", "ip": "8.8.8.8", "lang": "zh",
+        })
+        with self.assertRaises(ValueError):
+            helper.parse_cli(["locate-ip", "8.8.8.8", "de"])
+
+    def test_locate_ip_skips_reserved_addresses_and_formats_public_results(self):
+        """Reserved IPs should not call an external service; public results should become display text."""
+        helper = load_helper()
+        with mock.patch.object(helper, "_fetch_json") as fetch:
+            self.assertEqual(helper.locate_ip("203.0.113.7"), {
+                "status": "reserved", "ip": "203.0.113.7",
+            })
+            fetch.assert_not_called()
+
+        with mock.patch.object(helper, "_fetch_json", return_value={
+            "success": True, "country": "美国", "region": "加利福尼亚州", "city": "圣何塞",
+        }):
+            self.assertEqual(helper.locate_ip("8.8.8.8", "zh"), {
+                "status": "success", "ip": "8.8.8.8", "text": "美国 · 加利福尼亚州 · 圣何塞",
+            })
+
     def test_parse_cli_rejects_force_quota_bypass(self):
         """A caller allowed to run the helper must not opt itself out of quota accounting."""
         helper = load_helper()
@@ -565,6 +590,8 @@ class FrontendContractTests(TestCase):
         self.assertIn('id="bulk-confirm-overlay"', html)
         self.assertIn('currentData.can_bulk_unblock', script)
         self.assertIn('selectedBulkIps', script)
+        self.assertIn('toggleCurrentPageBulkSelection()', script)
+        self.assertIn('id === "select-all-blocked"', script)
 
     def test_bulk_ui_calls_source_aware_helper_and_reports_unprocessed_ips(self):
         """Batch requests must preserve the selected source and surface backend partial processing."""
@@ -573,3 +600,9 @@ class FrontendContractTests(TestCase):
         self.assertIn('unprocessed_ips', script)
         self.assertIn('summary', script)
         self.assertIn('selectedBulkIps = {}', script)
+
+    def test_location_lookup_uses_helper_not_browser_external_fetch(self):
+        """Cockpit pages should not depend on direct browser fetches to third-party location APIs."""
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
+        self.assertIn('["locate-ip", ip, curLang]', script)
+        self.assertNotIn('fetch("https://ipwho.is/', script)

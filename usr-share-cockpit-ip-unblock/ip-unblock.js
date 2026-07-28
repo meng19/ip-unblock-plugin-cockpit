@@ -217,6 +217,25 @@
         return Object.keys(ips);
     }
 
+    function selectedCurrentPageIpCount() {
+        return currentPageIps().filter(function (ip) { return selectedBulkIps[ip]; }).length;
+    }
+
+    function setCurrentPageBulkSelection(checked) {
+        if (!bulkSelectionEnabled()) return;
+        currentPageIps().forEach(function (ip) {
+            if (checked) selectedBulkIps[ip] = true;
+            else delete selectedBulkIps[ip];
+        });
+        renderAll();
+    }
+
+    function toggleCurrentPageBulkSelection() {
+        var ips = currentPageIps();
+        if (!bulkSelectionEnabled() || ips.length === 0) return;
+        setCurrentPageBulkSelection(selectedCurrentPageIpCount() !== ips.length);
+    }
+
     function clearBulkSelection() {
         selectedBulkIps = {};
     }
@@ -306,13 +325,11 @@
         }
         locationCache[ip] = { text: t("locationLoading"), loading: true };
 
-        fetch("https://ipwho.is/" + encodeURIComponent(ip) + "?lang=" + (curLang === "zh" ? "zh-CN" : "en"))
-            .then(function (response) {
-                if (!response.ok) throw new Error(response.statusText);
-                return response.json();
-            })
+        spawnHelper(["locate-ip", ip, curLang])
+            .then(function (raw) { return JSON.parse(raw); })
             .then(function (data) {
-                var text = data && data.success !== false ? formatLocation(data) : t("locationUnknown");
+                var text = data && data.status === "success" ? data.text :
+                    data && data.status === "reserved" ? t("locationReserved") : t("locationUnknown");
                 locationCache[ip] = { text: text };
                 setLocationCells(ip, text);
             })
@@ -501,7 +518,7 @@
             bulkButton.textContent = t("bulkUnblockBtn", { n: selectedCount });
         }
         if (selectAll) {
-            var selectedOnPage = currentPageIpList.filter(function (ip) { return selectedBulkIps[ip]; }).length;
+            var selectedOnPage = selectedCurrentPageIpCount();
             selectAll.checked = currentPageIpList.length > 0 && selectedOnPage === currentPageIpList.length;
             selectAll.indeterminate = selectedOnPage > 0 && selectedOnPage < currentPageIpList.length;
             selectAll.disabled = !canBulk || currentPageIpList.length === 0;
@@ -940,12 +957,13 @@
 
         el = getEl("select-all-blocked");
         if (el) el.addEventListener("change", function () {
-            if (!bulkSelectionEnabled()) return;
-            currentPageIps().forEach(function (ip) {
-                if (el.checked) selectedBulkIps[ip] = true;
-                else delete selectedBulkIps[ip];
-            });
-            renderAll();
+            setCurrentPageBulkSelection(el.checked);
+        });
+
+        el = getEl("bulk-select-column");
+        if (el) el.addEventListener("click", function (e) {
+            if (e.target && e.target.id === "select-all-blocked") return;
+            toggleCurrentPageBulkSelection();
         });
 
         el = getEl("search-input");
