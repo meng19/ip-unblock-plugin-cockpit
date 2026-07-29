@@ -1,2 +1,14 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# This project is installed and executed on Linux. Keep deployable text files LF
+# even when edited from a Windows checkout.
+*.sh text eol=lf
+.gitattributes text eol=lf
+usr-local-bin/* text eol=lf
+usr-share-cockpit-ip-unblock/* text eol=lf
+cockpit-ip-unblock.conf text eol=lf
+cockpit-ip-unblock.logrotate text eol=lf
+cockpit-ip-unblock.sudoers text eol=lf
+README.md text eol=lf
+tests/* text eol=lf

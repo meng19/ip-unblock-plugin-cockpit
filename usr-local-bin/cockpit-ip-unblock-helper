@@ -35,7 +35,8 @@ CONFIG_FILE = "/etc/cockpit-ip-unblock.conf"
 STATE_FILE = "/var/lib/cockpit/ip-unblock-state.json"
 FILE_LOG = "/var/log/cockpit-ip-unblock.log"
 SUDO_GROUP = "sudo"
-DEFAULT_POLICY = {"access_mode": "sudo_only", "daily_unblock_limit": 5,
+DEFAULT_POLICY = {"access_mode": "sudo_only", "allowed_users": [],
+                  "allow_readonly_view": True, "daily_unblock_limit": 5,
                   "show_recent_history": True}
 
 ALLOWED_TARGETS = {"DROP", "REJECT"}
@@ -384,10 +385,17 @@ def load_policy():
             raise ValueError("configuration must be an object")
         if configured.get("access_mode", policy["access_mode"]) not in {"all_users", "sudo_only"}:
             raise ValueError("invalid access_mode")
+        allowed_users = configured.get("allowed_users", policy["allowed_users"])
+        if (not isinstance(allowed_users, list) or
+                not all(isinstance(item, str) and item for item in allowed_users)):
+            raise ValueError("invalid allowed_users")
         if not isinstance(configured.get("daily_unblock_limit", policy["daily_unblock_limit"]), int) or configured.get("daily_unblock_limit", 5) < 0:
             raise ValueError("invalid daily_unblock_limit")
         if not isinstance(configured.get("show_recent_history", policy["show_recent_history"]), bool):
             raise ValueError("invalid show_recent_history")
+        if not isinstance(configured.get("allow_readonly_view", policy["allow_readonly_view"]), bool):
+            raise ValueError("invalid allow_readonly_view")
+        configured["allowed_users"] = allowed_users
         policy.update(configured)
         return policy
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -405,7 +413,15 @@ def is_sudoer(user):
 
 
 def is_authorized(user):
-    return load_policy()["access_mode"] == "all_users" or is_sudoer(user)
+    policy = load_policy()
+    return (policy["access_mode"] == "all_users" or
+            user in policy["allowed_users"] or
+            is_sudoer(user))
+
+
+def can_view_blocks(user):
+    policy = load_policy()
+    return is_authorized(user) or policy["allow_readonly_view"]
 
 
 def is_valid_ip(ipstr):
@@ -628,6 +644,7 @@ def get_adapters():
 def build_list_payload(user):
     """Build the source-aware list response while retaining the legacy fields."""
     remaining, limit, unlimited = get_quota(user)
+    can_unblock = is_authorized(user)
     available_sources = []
     records = []
     for adapter in get_adapters():
@@ -640,9 +657,28 @@ def build_list_payload(user):
         "quota_remaining": remaining,
         "quota_limit": limit,
         "unlimited": unlimited,
-        "can_bulk_unblock": is_authorized(user),
+        "can_unblock": can_unblock,
+        "can_bulk_unblock": can_unblock,
         "available_sources": available_sources,
         "blocked_ips": records,
+        "show_recent_history": load_policy()["show_recent_history"],
+    }
+
+
+def build_access_denied_payload(user):
+    """Return a complete list-shaped failure payload for unauthorized users."""
+    remaining, limit, unlimited = get_quota(user)
+    return {
+        "result": "failure",
+        "error": "sudo membership required",
+        "user": user,
+        "quota_remaining": remaining,
+        "quota_limit": limit,
+        "unlimited": unlimited,
+        "can_unblock": False,
+        "can_bulk_unblock": False,
+        "available_sources": [],
+        "blocked_ips": [],
         "show_recent_history": load_policy()["show_recent_history"],
     }
 
@@ -797,8 +833,8 @@ def _unblock_source(source, ip, matching_count):
 
 def cmd_list():
     user = get_user()
-    if not is_authorized(user):
-        print(json.dumps({"result": "failure", "error": "sudo membership required"}))
+    if not can_view_blocks(user):
+        print(json.dumps(build_access_denied_payload(user)))
         return
     print(json.dumps(build_list_payload(user)))
 
@@ -837,6 +873,14 @@ def cmd_locate_ip(ip, lang):
 
 def cmd_unblock(ip, source="all"):
     user = get_user()
+
+    if not is_authorized(user):
+        print(json.dumps({
+            "result": "failure", "ip": ip, "rules_removed": 0,
+            "source_results": [], "error": "sudo membership required",
+        }))
+        audit("unblock", ip, "failure", "unauthorized")
+        sys.exit(1)
 
     if not is_valid_ip(ip):
         msg = f"Invalid IP address: {ip}"

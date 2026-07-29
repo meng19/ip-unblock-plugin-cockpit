@@ -62,6 +62,8 @@
             locationUnknown: "未知位置",
             locationReserved: "本地/保留地址",
             msgLoadFailed: "加载封禁 IP 列表失败：",
+            msgNotAuthorized: "当前账号没有查看或解封权限，请将用户加入 allowed_users、把 access_mode 设置为 all_users，或把用户加入 sudo 组。",
+            unblockNotAllowed: "当前账号只能查看，不能解封。",
             msgUnblockFailed: "解封失败：",
             msgSudoFailed: "权限不足，请检查 sudo 配置。",
             showingAll: "共 {total} 条，显示第 {from} - {to} 条",
@@ -131,6 +133,8 @@
             locationUnknown: "Unknown location",
             locationReserved: "Local/reserved",
             msgLoadFailed: "Failed to load blocked IPs: ",
+            msgNotAuthorized: "This account is not allowed to view or unblock IPs. Add the user to allowed_users, set access_mode to all_users, or add the user to the sudo group.",
+            unblockNotAllowed: "This account can view blocks but cannot unblock them.",
             msgUnblockFailed: "Unblock failed: ",
             msgSudoFailed: "Permission denied, check sudo configuration.",
             showingAll: "{total} total, showing {from} - {to}",
@@ -194,6 +198,10 @@
 
     function bulkSelectionEnabled() {
         return !!(currentData && currentData.can_bulk_unblock);
+    }
+
+    function unblockEnabled() {
+        return !!(currentData && currentData.can_unblock);
     }
 
     function selectedBulkIpList() {
@@ -401,6 +409,48 @@
         return cockpit.spawn(fullArgs, { err: "message" });
     }
 
+    function numberOrDefault(value, fallback) {
+        return typeof value === "number" && isFinite(value) ? value : fallback;
+    }
+
+    function normalizeListPayload(data) {
+        data = data && typeof data === "object" ? data : {};
+        var remaining = numberOrDefault(data.quota_remaining,
+            numberOrDefault(data.remaining, 0));
+        var limit = numberOrDefault(data.quota_limit,
+            numberOrDefault(data.limit, 0));
+        var unlimited = !!data.unlimited || remaining < 0 || limit < 0;
+        if (unlimited) {
+            remaining = -1;
+            limit = -1;
+        }
+        return {
+            result: data.result || "success",
+            error: data.error || "",
+            user: data.user || data.current_user || "unknown",
+            quota_remaining: remaining,
+            quota_limit: limit,
+            unlimited: unlimited,
+            can_unblock: data.can_unblock !== undefined ? !!data.can_unblock : !!data.can_bulk_unblock,
+            can_bulk_unblock: !!data.can_bulk_unblock,
+            available_sources: Array.isArray(data.available_sources) ? data.available_sources : [],
+            blocked_ips: Array.isArray(data.blocked_ips) ? data.blocked_ips : [],
+            show_recent_history: data.show_recent_history !== false,
+        };
+    }
+
+    function normalizeRecentPayload(data) {
+        data = data && typeof data === "object" ? data : {};
+        return {
+            user: data.user || "unknown",
+            history: Array.isArray(data.history) ? data.history : [],
+        };
+    }
+
+    function helperErrorText(error) {
+        return error === "sudo membership required" ? t("msgNotAuthorized") : String(error || "");
+    }
+
     /* =================================================================
      *  Search / filter
      * ================================================================= */
@@ -448,18 +498,26 @@
         });
         hideRecentDuringLoad();
 
+        var listError = "";
+
         // Load list and recent in parallel
         var p1 = spawnHelper(["list"]).then(function (raw) {
-            currentData = JSON.parse(raw);
+            currentData = normalizeListPayload(JSON.parse(raw));
+            if (currentData.result === "failure") {
+                listError = helperErrorText(currentData.error || "list request failed");
+            }
             reconcileBulkSelection();
             applyFilter(true);
         });
         var p2 = spawnHelper(["recent"]).then(function (raw) {
-            recentData = JSON.parse(raw);
+            recentData = normalizeRecentPayload(JSON.parse(raw));
+        }).catch(function () {
+            recentData = { history: [] };
         });
 
         Promise.all([p1, p2]).then(function () {
             renderAll();
+            if (listError) showMessage("error", t("msgLoadFailed") + listError);
         }).catch(function (err) {
             currentData = null;
             filtered = [];
@@ -488,7 +546,14 @@
         var d = currentData;
         var userEl = getEl("current-user");
         var quotaEl = getEl("quota-remaining");
+        var quotaItem = quotaEl && quotaEl.closest ? quotaEl.closest(".quota-item") : null;
+        var quotaDivider = quotaItem ? quotaItem.previousElementSibling : null;
         if (userEl) userEl.textContent = d.user || "unknown";
+        if (quotaItem) quotaItem.style.display = unblockEnabled() ? "" : "none";
+        if (quotaDivider && quotaDivider.classList && quotaDivider.classList.contains("quota-divider")) {
+            quotaDivider.style.display = unblockEnabled() ? "" : "none";
+        }
+        if (!unblockEnabled()) return;
         if (quotaEl) {
             if (d.unlimited) {
                 quotaEl.textContent = t("unlimited");
@@ -509,6 +574,7 @@
         var selectAll = getEl("select-all-blocked");
         var selectColumn = getEl("bulk-select-column");
         var bulkButton = getEl("bulk-unblock-btn");
+        var canUnblock = unblockEnabled();
         var canBulk = bulkSelectionEnabled();
         var currentPageIpList = currentPageIps();
 
@@ -530,7 +596,7 @@
 
         if (searchBox) searchBox.style.display = "flex";
 
-        if (currentData.blocked_ips.length === 0) {
+        if ((currentData.blocked_ips || []).length === 0) {
             if (emptyEl) emptyEl.style.display = "block";
             if (noMatchEl) noMatchEl.style.display = "none";
             if (tableEl) tableEl.style.display = "none";
@@ -616,9 +682,16 @@
             btn.setAttribute("data-ip", rule.ip);
             btn.setAttribute("data-source", rule.source);
             btn.addEventListener("click", function () {
+                if (!unblockEnabled()) return;
                 openConfirm(this.getAttribute("data-ip"), selectedSource(), unlimited ? -1 : quota);
             });
-            if (!unlimited && quota <= 0) { btn.disabled = true; btn.title = t("quotaExhausted"); }
+            if (!canUnblock) {
+                btn.disabled = true;
+                btn.title = t("unblockNotAllowed");
+            } else if (!unlimited && quota <= 0) {
+                btn.disabled = true;
+                btn.title = t("quotaExhausted");
+            }
             tdA.appendChild(btn);
             tr.appendChild(tdA);
 
@@ -721,7 +794,7 @@
         var body = getEl("recent-body");
         var empty = getEl("no-recent");
         if (!section || !body) return;
-        if (!currentData || !currentData.show_recent_history) {
+        if (!currentData || !currentData.show_recent_history || !unblockEnabled()) {
             hideRecentDuringLoad();
             return;
         }

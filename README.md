@@ -9,12 +9,16 @@ Cockpit 插件：查看并安全解除 iptables、fail2ban、firewalld 与 UFW �
 ```json
 {
   "access_mode": "sudo_only",
+  "allowed_users": ["alice", "bob"],
+  "allow_readonly_view": true,
   "daily_unblock_limit": 5,
   "show_recent_history": true
 }
 ```
 
 - `access_mode`: `sudo_only` 或 `all_users`。
+- `allowed_users`: 在 `sudo_only` 模式下额外授权的普通用户名列表；这些用户按每日额度限制使用。
+- `allow_readonly_view`: `true` 时，未被授权解封的用户仍可查看封禁 IP，但解封按钮置灰；`false` 时未授权用户不能查看列表。
 - `daily_unblock_limit`: 普通用户每日额度；`0` 不限额。sudo 用户始终不限额。
 - `show_recent_history`: 是否显示今日解封记录。
 

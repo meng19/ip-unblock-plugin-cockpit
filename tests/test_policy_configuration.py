@@ -28,11 +28,67 @@ class PolicyConfigurationTests(TestCase):
                  mock.patch.object(helper, "load_state", return_value={}):
                 self.assertEqual(helper.get_quota("regular"), (2, 2, False))
 
+    def test_sudo_only_policy_allows_named_regular_users(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "policy.json"
+            path.write_text(json.dumps({"access_mode": "sudo_only",
+                                        "allowed_users": ["alice", "bob"],
+                                        "allow_readonly_view": True,
+                                        "daily_unblock_limit": 2,
+                                        "show_recent_history": True}), encoding="utf-8")
+            with mock.patch.object(helper, "CONFIG_FILE", str(path)), \
+                 mock.patch.object(helper, "is_sudoer", return_value=False):
+                self.assertTrue(helper.is_authorized("alice"))
+                self.assertTrue(helper.is_authorized("bob"))
+                self.assertFalse(helper.is_authorized("carol"))
+                self.assertTrue(helper.can_view_blocks("carol"))
+
+    def test_readonly_view_can_be_disabled_for_unauthorized_users(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "policy.json"
+            path.write_text(json.dumps({"access_mode": "sudo_only",
+                                        "allowed_users": ["alice"],
+                                        "allow_readonly_view": False,
+                                        "daily_unblock_limit": 2,
+                                        "show_recent_history": True}), encoding="utf-8")
+            with mock.patch.object(helper, "CONFIG_FILE", str(path)), \
+                 mock.patch.object(helper, "is_sudoer", return_value=False):
+                self.assertTrue(helper.can_view_blocks("alice"))
+                self.assertFalse(helper.can_view_blocks("bob"))
+
     def test_invalid_policy_uses_safe_defaults(self):
         helper = load_helper()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "policy.json"
             path.write_text('{"daily_unblock_limit": -1}', encoding="utf-8")
+            with mock.patch.object(helper, "CONFIG_FILE", str(path)), \
+                 mock.patch.object(helper, "audit"):
+                self.assertEqual(helper.load_policy(), helper.DEFAULT_POLICY)
+
+    def test_invalid_allowed_users_uses_safe_defaults(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "policy.json"
+            path.write_text(json.dumps({"access_mode": "sudo_only",
+                                        "allowed_users": "alice",
+                                        "allow_readonly_view": True,
+                                        "daily_unblock_limit": 2,
+                                        "show_recent_history": True}), encoding="utf-8")
+            with mock.patch.object(helper, "CONFIG_FILE", str(path)), \
+                 mock.patch.object(helper, "audit"):
+                self.assertEqual(helper.load_policy(), helper.DEFAULT_POLICY)
+
+    def test_invalid_readonly_view_uses_safe_defaults(self):
+        helper = load_helper()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "policy.json"
+            path.write_text(json.dumps({"access_mode": "sudo_only",
+                                        "allowed_users": [],
+                                        "allow_readonly_view": "yes",
+                                        "daily_unblock_limit": 2,
+                                        "show_recent_history": True}), encoding="utf-8")
             with mock.patch.object(helper, "CONFIG_FILE", str(path)), \
                  mock.patch.object(helper, "audit"):
                 self.assertEqual(helper.load_policy(), helper.DEFAULT_POLICY)

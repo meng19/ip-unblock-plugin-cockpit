@@ -282,15 +282,83 @@ class MultiSourceCommandTests(TestCase):
         ])
 
     def test_list_payload_reports_bulk_permission_from_authorization(self):
-        """The bulk control must be available exactly to authorized users."""
+        """Unblock controls must be available exactly to authorized users."""
         helper = load_helper()
         with mock.patch.object(helper, "get_adapters", return_value=[]), \
              mock.patch.object(helper, "get_quota", return_value=(5, 5, False)), \
              mock.patch.object(helper, "is_authorized", side_effect=[True, False]):
             authorized = helper.build_list_payload("alice")
             unauthorized = helper.build_list_payload("bob")
+        self.assertIs(authorized["can_unblock"], True)
         self.assertIs(authorized["can_bulk_unblock"], True)
+        self.assertIs(unauthorized["can_unblock"], False)
         self.assertIs(unauthorized["can_bulk_unblock"], False)
+
+    def test_cmd_list_readonly_user_can_view_blocks_without_unblock_permission(self):
+        """Users outside the unblock allow-list can still inspect blocks when readonly view is enabled."""
+        helper = load_helper()
+        output = io.StringIO()
+        adapter = self._adapter("iptables", True, [{"source": "iptables", "ip": "203.0.113.7"}])
+        with mock.patch.object(helper, "get_user", return_value="bob"), \
+             mock.patch.object(helper, "can_view_blocks", return_value=True), \
+             mock.patch.object(helper, "is_authorized", return_value=False), \
+             mock.patch.object(helper, "get_quota", return_value=(5, 5, False)), \
+             mock.patch.object(helper, "get_adapters", return_value=[adapter]), \
+             mock.patch.object(helper, "load_policy", return_value=helper.DEFAULT_POLICY), \
+             mock.patch("sys.stdout", output):
+            helper.cmd_list()
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["user"], "bob")
+        self.assertIs(payload["can_unblock"], False)
+        self.assertIs(payload["can_bulk_unblock"], False)
+        self.assertEqual(payload["blocked_ips"], [{"source": "iptables", "ip": "203.0.113.7"}])
+
+    def test_cmd_list_unauthorized_user_returns_empty_contract_when_readonly_disabled(self):
+        """The frontend must not receive a shape that makes quota or table rendering crash."""
+        helper = load_helper()
+        output = io.StringIO()
+        policy = {"access_mode": "sudo_only", "allowed_users": [],
+                  "allow_readonly_view": False, "daily_unblock_limit": 5,
+                  "show_recent_history": True}
+        with mock.patch.object(helper, "get_user", return_value="alice"), \
+             mock.patch.object(helper, "can_view_blocks", return_value=False), \
+             mock.patch.object(helper, "get_quota", return_value=(5, 5, False)), \
+             mock.patch.object(helper, "load_policy", return_value=policy), \
+             mock.patch("sys.stdout", output):
+            helper.cmd_list()
+        self.assertEqual(json.loads(output.getvalue()), {
+            "result": "failure",
+            "error": "sudo membership required",
+            "user": "alice",
+            "quota_remaining": 5,
+            "quota_limit": 5,
+            "unlimited": False,
+            "can_unblock": False,
+            "can_bulk_unblock": False,
+            "available_sources": [],
+            "blocked_ips": [],
+            "show_recent_history": True,
+        })
+
+    def test_cmd_unblock_rejects_unauthorized_user_before_processing(self):
+        """Direct helper calls must obey the same policy as the list endpoint."""
+        helper = load_helper()
+        output = io.StringIO()
+        with mock.patch.object(helper, "get_user", return_value="alice"), \
+             mock.patch.object(helper, "is_authorized", return_value=False), \
+             mock.patch.object(helper, "unblock_ip") as unblock, \
+             mock.patch.object(helper, "audit"), \
+             mock.patch("sys.stdout", output), \
+             self.assertRaises(SystemExit):
+            helper.cmd_unblock("203.0.113.7")
+        self.assertEqual(json.loads(output.getvalue()), {
+            "result": "failure",
+            "ip": "203.0.113.7",
+            "rules_removed": 0,
+            "source_results": [],
+            "error": "sudo membership required",
+        })
+        unblock.assert_not_called()
 
     def test_all_attempts_every_available_source_and_isolates_failure(self):
         """A failed backend cannot prevent later available sources from being attempted."""
@@ -596,6 +664,23 @@ class FrontendContractTests(TestCase):
         self.assertIn('toggleCurrentPageBulkSelection()', script)
         self.assertIn('closest("#select-all-blocked")', script)
 
+    def test_single_unblock_buttons_are_gated_by_unblock_permission(self):
+        """Readonly viewers should see block rows while each unblock button stays disabled."""
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
+        self.assertIn("function unblockEnabled()", script)
+        self.assertIn("can_unblock:", script)
+        self.assertIn("var canUnblock = unblockEnabled()", script)
+        self.assertIn("if (!canUnblock)", script)
+        self.assertIn('btn.title = t("unblockNotAllowed")', script)
+
+    def test_readonly_viewers_do_not_see_quota_or_recent_history(self):
+        """Quota and personal unblock history are meaningful only for users who can unblock."""
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
+        self.assertIn('quotaItem.style.display = unblockEnabled() ? "" : "none"', script)
+        self.assertIn('quotaDivider.style.display = unblockEnabled() ? "" : "none"', script)
+        self.assertIn("!unblockEnabled()) {", script)
+        self.assertIn("!currentData.show_recent_history || !unblockEnabled()", script)
+
     def test_bulk_ui_calls_source_aware_helper_and_reports_unprocessed_ips(self):
         """Batch requests must preserve the selected source and surface backend partial processing."""
         script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
@@ -609,3 +694,13 @@ class FrontendContractTests(TestCase):
         script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
         self.assertIn('["locate-ip", ip, curLang]', script)
         self.assertNotIn('fetch("https://ipwho.is/', script)
+
+    def test_script_normalizes_list_payload_before_rendering(self):
+        """Failure or legacy list payloads must not render unknown or undefined quota values."""
+        script = (Path(__file__).parents[1] / "usr-share-cockpit-ip-unblock" / "ip-unblock.js").read_text(encoding="utf-8")
+        self.assertIn("function normalizeListPayload(data)", script)
+        self.assertIn("currentData = normalizeListPayload(JSON.parse(raw))", script)
+        self.assertIn("(currentData.blocked_ips || []).length", script)
+        self.assertIn("function helperErrorText(error)", script)
+        self.assertIn('t("msgNotAuthorized")', script)
+        self.assertIn('if (listError) showMessage("error"', script)
