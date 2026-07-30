@@ -11,4 +11,5 @@ cockpit-ip-unblock.conf text eol=lf
 cockpit-ip-unblock.logrotate text eol=lf
 cockpit-ip-unblock.sudoers text eol=lf
 README.md text eol=lf
+docs/* text eol=lf
 tests/* text eol=lf

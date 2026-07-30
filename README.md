@@ -2,6 +2,19 @@
 
 Cockpit 插件：查看并安全解除 iptables、fail2ban、firewalld 与 UFW 的 IP 封禁。系统会自动检测可用来源。
 
+## 服务器自助解封功能介绍
+
+本功能用于在服务器触发 IP 封禁后，由用户通过 Cockpit 页面自助查看封禁来源并提交解封操作，减少人工工单处理。页面会汇总 iptables、fail2ban、firewalld 与 UFW 中可识别的精确 IP 封禁记录，并显示封禁来源、规则详情和位置信息。
+
+访问入口需要放在受密码保护的页面或系统登录之后。不要在公开页面暴露 Cockpit 地址、服务器管理地址、访问密码或可直接执行解封的链接。推荐做法是将说明文章设置为密码保护，仅在文章中说明访问方式和使用规则；真正的解封操作仍由 Cockpit 登录、`allowed_users` 授权、每日额度和后端审计共同保护。
+
+权限行为：
+
+- `allowed_users` 内的用户可以查看并解封，普通用户受每日额度限制。
+- 不在 `allowed_users` 内且 `allow_readonly_view` 为 `true` 的用户只能查看封禁 IP，解封按钮置灰。
+- `allow_readonly_view` 为 `false` 时，未授权用户不能查看封禁列表。
+- sudo 组用户始终不限解封次数。
+
 ## 管理员配置
 
 安装后编辑 `/etc/cockpit-ip-unblock.conf`：
